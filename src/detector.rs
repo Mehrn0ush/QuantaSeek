@@ -1,10 +1,15 @@
-use crate::types::{HandshakeResult, PqcAnalysis};
+use crate::types::{HandshakeResult, PqcAnalysis, SignatureNegotiationStatus};
+use crate::signature_detector::SignatureDetector;
 
-pub struct PqcDetector;
+pub struct PqcDetector {
+    signature_detector: SignatureDetector,
+}
 
 impl PqcDetector {
     pub fn new() -> Self {
-        Self
+        Self {
+            signature_detector: SignatureDetector::new(),
+        }
     }
 
     /// Determines if PQC is detected based on handshake results
@@ -124,6 +129,11 @@ impl PqcDetector {
             security_level: String::new(),
             hybrid_detected: false,
             classical_fallback_available: false,
+            pqc_signature_used: false,
+            pqc_signature_algorithm: None,
+            certificate_length_estimate: None,
+            signature_negotiation_status: SignatureNegotiationStatus::Unknown,
+            server_endpoint_fingerprint: None,
         };
 
         // Analyze key exchange
@@ -241,19 +251,11 @@ impl PqcDetector {
         // Analyze extensions
         self.analyze_extensions(result, &mut analysis);
         
+        // Enhanced PQC signature detection using SignatureDetector
+        self.analyze_signatures(result, &mut analysis);
+        
         // Determine overall security level
         self.determine_security_level(&mut analysis);
-        
-        // Set a clear status for signature algorithms
-        if !analysis.pqc_signature_algorithms.is_empty() {
-            analysis.pqc_signature_status = "Detected".to_string();
-        } else if !result.certificate_visible && result.tls_version == "1.3" {
-            analysis.pqc_signature_status = "Not visible (Encrypted in TLS 1.3)".to_string();
-        } else if result.certificate_visible {
-            analysis.pqc_signature_status = "None found".to_string();
-        } else {
-            analysis.pqc_signature_status = "Not applicable".to_string();
-        }
         
         analysis
     }
@@ -414,6 +416,28 @@ impl PqcDetector {
         }
     }
 
+    fn analyze_signatures(&self, result: &HandshakeResult, analysis: &mut PqcAnalysis) {
+        // Extract hostname from target (assuming format "hostname:port")
+        let hostname = result.target.split(':').next().unwrap_or(&result.target);
+        
+        // Estimate certificate length from raw certificate data
+        let certificate_length = if !result.raw_certificate.is_empty() {
+            Some(result.raw_certificate.len() as u32)
+        } else {
+            None
+        };
+        
+        // Use SignatureDetector to analyze signatures
+        self.signature_detector.update_analysis(
+            analysis,
+            &result.pqc_signature_algorithms,
+            certificate_length,
+            hostname,
+            &result.key_exchange,
+            &result.cipher_suite
+        );
+    }
+
     fn determine_security_level(&self, analysis: &mut PqcAnalysis) {
         if analysis.pqc_detected {
             if analysis.classical_fallback_available {
@@ -487,6 +511,7 @@ mod tests {
         let detector = PqcDetector::new();
         
         let handshake_result = HandshakeResult {
+            target: "example.com:443".to_string(),
             tls_version: "1.3".to_string(),
             cipher_suite: "TLS_AES_256_GCM_SHA384".to_string(),
             key_exchange: vec!["x25519".to_string(), "kyber1024".to_string()],

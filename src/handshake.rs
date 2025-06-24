@@ -126,6 +126,7 @@ impl HandshakeEngine {
         let duration = start_time.elapsed();
         result.handshake_duration_ms = Some(duration.as_millis() as u64);
         result.client_profile_used = self.profile;
+        result.target = hostname.to_string();
         
         Ok(result)
     }
@@ -419,19 +420,24 @@ impl HandshakeEngine {
         
         let algorithms = match self.profile {
             HandshakeProfile::CloudflarePqc => vec![
-                0x0807, // rsa_pss_sha256
-                0x0403, // ed25519
-                0x0401, // ecdsa_secp256r1_sha256
-                SIG_DILITHIUM2, // 0x0b01 (IETF draft Dilithium2)
-                SIG_DILITHIUM3, // 0x0b02 (IETF draft Dilithium3)
+                0x0807, // Ed25519
+                0x0403, // ECDSA_SECP256R1_SHA256
+                0x0401, // RSA_PKCS1_SHA256
+                0x0808, // Dilithium2 (draft ID)
+                0x0809, // Dilithium3 (draft ID)
+                0x080a, // Dilithium5 (draft ID)
+                0x080b, // Falcon512 (draft ID)
+                0x080c, // Falcon1024 (draft ID)
             ],
             HandshakeProfile::HybridPqc => vec![
-                0x0403, // ed25519
-                0x0401, // ecdsa_secp256r1_sha256
-                SIG_DILITHIUM3, // 0x0b02 (IETF draft Dilithium3)
+                0x0807, // Ed25519
+                0x0403, // ECDSA_SECP256R1_SHA256
+                0x0809, // Dilithium3 (draft ID)
+                0x080b, // Falcon512 (draft ID)
             ],
             _ => vec![
                 SIG_ECDSA_SECP256R1_SHA256, // Primary for Cloudflare
+                0x0807, // Ed25519
             ],
         };
         

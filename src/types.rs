@@ -93,6 +93,7 @@ pub struct CertificateInfo {
 /// Complete handshake analysis result
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HandshakeResult {
+    pub target: String,
     pub tls_version: String,
     pub cipher_suite: String,
     pub key_exchange: Vec<String>,
@@ -126,6 +127,30 @@ pub struct PqcAnalysis {
     pub security_level: String,
     pub hybrid_detected: bool,
     pub classical_fallback_available: bool,
+    pub pqc_signature_used: bool,
+    pub pqc_signature_algorithm: Option<String>,
+    pub certificate_length_estimate: Option<u32>,
+    pub signature_negotiation_status: SignatureNegotiationStatus,
+    pub server_endpoint_fingerprint: Option<String>,
+}
+
+/// Signature negotiation status
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum SignatureNegotiationStatus {
+    #[serde(rename = "negotiated")]
+    Negotiated,
+    #[serde(rename = "not_offered")]
+    NotOffered,
+    #[serde(rename = "rejected")]
+    Rejected,
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+impl Default for SignatureNegotiationStatus {
+    fn default() -> Self {
+        Self::Unknown
+    }
 }
 
 /// Output format options

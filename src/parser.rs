@@ -61,6 +61,7 @@ impl TlsParser {
         println!("Parsing TLS response of {} bytes", data.len());
         
         let mut result = HandshakeResult {
+            target: "Unknown".to_string(),
             tls_version: "Unknown".to_string(),
             cipher_suite: "Unknown".to_string(),
             key_exchange: Vec::new(),

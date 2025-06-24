@@ -96,6 +96,23 @@ pub fn output_results(result: &ScanResult, format: &OutputFormat) -> Result<()> 
                 println!("PQC Extensions: {:?}", result.analysis.pqc_extensions);
             }
             
+            // Enhanced PQC signature information
+            if result.analysis.pqc_signature_used {
+                println!("PQC Signature Used: {}", result.analysis.pqc_signature_used);
+                if let Some(ref alg) = result.analysis.pqc_signature_algorithm {
+                    println!("PQC Signature Algorithm: {}", alg);
+                }
+                println!("Signature Negotiation Status: {:?}", result.analysis.signature_negotiation_status);
+            }
+            
+            if let Some(length) = result.analysis.certificate_length_estimate {
+                println!("Certificate Length Estimate: {} bytes", length);
+            }
+            
+            if let Some(ref fingerprint) = result.analysis.server_endpoint_fingerprint {
+                println!("Server Endpoint Fingerprint: {}", fingerprint);
+            }
+            
             println!("\n--- Server Features ---");
             if let Some(alpn) = &result.tls_features.alpn {
                 println!("ALPN Protocol: {}", alpn);
@@ -221,6 +238,7 @@ mod tests {
         let mut result = ScanResult::new("example.com:443".to_string());
         
         let handshake_result = HandshakeResult {
+            target: "example.com:443".to_string(),
             tls_version: "1.3".to_string(),
             cipher_suite: "TLS_AES_256_GCM_SHA384".to_string(),
             key_exchange: vec!["x25519".to_string(), "kyber1024".to_string()],
