@@ -1,0 +1,47 @@
+# Rust build output
+/target/
+/Cargo.lock
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.dylib
+*.so
+*.rlib
+
+# Logs and runtime files
+*.log
+*.trace
+*.jsonl
+*.pcap
+*.pcapng
+*.csv
+*.out
+
+# Debugging
+*.lldb
+*.gdb
+core
+*.profraw
+
+# IDEs and editors
+/.idea/
+/.vscode/
+/*.swp
+*.swo
+*.bak
+*.tmp
+
+# macOS
+.DS_Store
+
+# GitHub Codespaces
+.devcontainer/
+
+# Project-specific artifacts
+/output/
+*.fingerprint.json
+*.certdump
+*.debugdump
+pqscan_cache/

@@ -1,0 +1,21 @@
+[package]
+name = "QuantaSeek"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pqcscan"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+hex = "0.4"
+ring = "0.17"
+webpki = "0.22"
+base64 = "0.21"
+chrono = { version = "0.4", features = ["serde"] }
+x509-parser = "0.17.0"
