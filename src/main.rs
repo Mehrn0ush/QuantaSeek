@@ -1,7 +1,8 @@
 use clap::{Command, Arg};
 use tokio::net::TcpStream;
 use anyhow::Result;
-use QuantaSeek::{HandshakeEngine, HandshakeProfile, output_results, OutputFormat, ScanResult};
+use QuantaSeek::{HandshakeEngine, HandshakeProfile, output_results, OutputFormat, ScanResult, SecurityScorer};
+use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,7 +28,7 @@ async fn main() -> Result<()> {
                 .short('f')
                 .long("format")
                 .help("Output format")
-                .value_parser(["json", "stdout"])
+                .value_parser(["json", "text"])
                 .default_value("json")
         )
         .get_matches();
@@ -48,7 +49,7 @@ async fn main() -> Result<()> {
     // Parse output format
     let format = match format_str.as_str() {
         "json" => OutputFormat::Json,
-        "stdout" => OutputFormat::Stdout,
+        "text" => OutputFormat::Text,
         _ => OutputFormat::Json, // Default fallback
     };
 
@@ -57,6 +58,9 @@ async fn main() -> Result<()> {
     println!("Profile: {:?}", profile);
     println!("Format: {:?}", format);
     println!("═══════════════════════════");
+
+    // Start timing the complete scan
+    let scan_start = Instant::now();
 
     // Parse hostname and port
     let (hostname, port) = parse_target(target)?;
@@ -68,11 +72,23 @@ async fn main() -> Result<()> {
     let engine = HandshakeEngine::new(profile);
     let handshake_result = engine.perform_handshake(stream, &hostname).await?;
     
+    // Calculate total scan duration
+    let total_scan_duration = scan_start.elapsed();
+    
     // Create scan result and output
     let mut scan_result = ScanResult::new(target.to_string());
     scan_result.update_from_handshake(handshake_result);
+    scan_result.total_scan_duration_ms = Some(total_scan_duration.as_millis() as u64);
     
-    output_results(&scan_result, &format)?;
+    // Calculate security score
+    let security_scorer = SecurityScorer::new();
+    scan_result.security_score = security_scorer.calculate_security_score(&scan_result);
+    
+    // Generate warnings and recommendations
+    scan_result.security_warnings = security_scorer.generate_security_warnings(&scan_result);
+    scan_result.performance_warnings = security_scorer.generate_performance_warnings(&scan_result);
+    
+    output_results(&scan_result, format);
     
     Ok(())
 }

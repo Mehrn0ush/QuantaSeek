@@ -1,5 +1,5 @@
-use crate::{OutputFormat, detector::PqcDetector, types::{ScanResult, HandshakeResult, TlsFeatures, EarlyDataStatus}};
-use anyhow::Result;
+use crate::{OutputFormat, detector::PqcDetector, types::{ScanResult, HandshakeResult, TlsFeatures}};
+use serde_json;
 
 impl ScanResult {
     pub fn new(target: String) -> Self {
@@ -27,6 +27,10 @@ impl ScanResult {
             total_scan_duration_ms: None,
             adaptive_fingerprinting: false,
             server_fingerprint: None,
+            extension_map: crate::types::ExtensionMap::default(),
+            security_score: crate::types::SecurityScore::default(),
+            security_warnings: Vec::new(),
+            performance_warnings: Vec::new(),
         }
     }
 
@@ -46,10 +50,24 @@ impl ScanResult {
             self.certificate = Some(cert_info.clone());
         }
         
+        // Update extension_map from real handshake data
+        self.extension_map = handshake_result.extension_map.clone();
+        
         // Run PQC analysis
         let detector = PqcDetector::new();
         self.analysis = detector.analyze_handshake(&handshake_result);
-        self.pqc_detected = self.analysis.pqc_detected;
+        
+        // Handle TLS 1.2 fallback scenario
+        if handshake_result.tls_version == "1.2" {
+            println!("TLS 1.2 detected - updating scan result for classical fallback");
+            self.pqc_detected = false;
+            self.fallback.attempted = true;
+            self.fallback.succeeded = true;
+            self.analysis.classical_fallback_available = true;
+            self.fallback.attempted_profiles.push("TLS 1.2 Fallback".to_string());
+        } else {
+            self.pqc_detected = self.analysis.pqc_detected;
+        }
         
         // Add PQC signature algorithms from handshake
         for sig_alg in &handshake_result.pqc_signature_algorithms {
@@ -60,105 +78,150 @@ impl ScanResult {
     }
 }
 
-pub fn output_results(result: &ScanResult, format: &OutputFormat) -> Result<()> {
-    match format {
-        OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(result)?;
-            println!("{}", json);
-        }
-        OutputFormat::Stdout => {
-            println!("=== TLS Scan Results ===");
-            println!("Target: {}", result.target);
-            println!("Client Profile: {}", result.client_profile_used);
-            if let Some(duration) = result.handshake_duration_ms {
-                println!("Handshake Duration: {}ms", duration);
-            }
-            if let Some(total_duration) = result.total_scan_duration_ms {
-                println!("Total Scan Duration: {}ms", total_duration);
-            }
-            if result.adaptive_fingerprinting {
-                println!("Adaptive Fingerprinting: Enabled");
-            }
-            if let Some(fingerprint) = &result.server_fingerprint {
-                println!("Server Fingerprint: {}", fingerprint);
-            }
-            println!("TLS Version: {}", result.analysis.tls_version);
-            println!("Cipher Suite: {}", result.analysis.cipher_suite);
-            println!("Key Exchange: {}", result.analysis.key_exchange);
-            println!("Security Level: {}", result.analysis.security_level);
-            println!("PQC Detected: {}", result.pqc_detected);
-            
-            if !result.analysis.pqc_key_exchange.is_empty() {
-                println!("PQC Key Exchange: {:?}", result.analysis.pqc_key_exchange);
-            }
-            
-            if !result.analysis.pqc_extensions.is_empty() {
-                println!("PQC Extensions: {:?}", result.analysis.pqc_extensions);
-            }
-            
-            // Enhanced PQC signature information
-            if result.analysis.pqc_signature_used {
-                println!("PQC Signature Used: {}", result.analysis.pqc_signature_used);
-                if let Some(ref alg) = result.analysis.pqc_signature_algorithm {
-                    println!("PQC Signature Algorithm: {}", alg);
-                }
-                println!("Signature Negotiation Status: {:?}", result.analysis.signature_negotiation_status);
-            }
-            
-            if let Some(length) = result.analysis.certificate_length_estimate {
-                println!("Certificate Length Estimate: {} bytes", length);
-            }
-            
-            if let Some(ref fingerprint) = result.analysis.server_endpoint_fingerprint {
-                println!("Server Endpoint Fingerprint: {}", fingerprint);
-            }
-            
-            println!("\n--- Server Features ---");
-            if let Some(alpn) = &result.tls_features.alpn {
-                println!("ALPN Protocol: {}", alpn);
-            } else {
-                println!("ALPN Protocol: Not negotiated");
-            }
-            
-            match &result.tls_features.session_ticket {
-                Some(true) => println!("Session Ticket Support: true"),
-                Some(false) => println!("Session Ticket Support: false"),
-                None => println!("Session Ticket Support: Not present"),
-            }
-            
-            println!("OCSP Stapling Support: {}", result.tls_features.ocsp_stapling);
-            
-            match &result.tls_features.early_data_status {
-                EarlyDataStatus::NotOffered => println!("Early Data (0-RTT): Not offered"),
-                EarlyDataStatus::Accepted => println!("Early Data (0-RTT): Accepted"),
-                EarlyDataStatus::Rejected => println!("Early Data (0-RTT): Rejected"),
-            }
-            
-            if !result.analysis.security_features.is_empty() {
-                println!("\n--- Security Analysis ---");
-                println!("Security Features: {:?}", result.analysis.security_features);
-            }
-            
-            println!("Classical Fallback: {}", result.analysis.classical_fallback_available);
-            println!("Hybrid Detected: {}", result.analysis.hybrid_detected);
-            
-            // Display fallback information if applicable
-            if result.fallback.attempted {
-                println!("\n--- Fallback Information ---");
-                println!("Fallback Attempted: {}", result.fallback.attempted);
-                println!("Fallback Succeeded: {}", result.fallback.succeeded);
-                println!("Attempts Count: {}", result.fallback.attempts_count);
-                if let Some(penalty) = result.fallback.fallback_penalty_ms {
-                    println!("Fallback Time Penalty: {}ms", penalty);
-                }
-                if !result.fallback.attempted_profiles.is_empty() {
-                    println!("Attempted Profiles: {:?}", result.fallback.attempted_profiles);
-                }
-            }
+pub struct OutputFormatter;
+
+impl OutputFormatter {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn format_result(&self, result: &ScanResult, format: OutputFormat) -> String {
+        match format {
+            OutputFormat::Json => self.format_json(result),
+            OutputFormat::Text => self.format_text(result),
         }
     }
-    
-    Ok(())
+
+    fn format_json(&self, result: &ScanResult) -> String {
+        serde_json::to_string_pretty(result).unwrap_or_else(|_| "Error serializing result".to_string())
+    }
+
+    fn format_text(&self, result: &ScanResult) -> String {
+        let mut output = String::new();
+        
+        // Basic information
+        output.push_str(&format!("Target: {}\n", result.target));
+        output.push_str(&format!("TLS Version: {}\n", result.tls_version));
+        output.push_str(&format!("Cipher Suite: {}\n", result.cipher_suite));
+        output.push_str(&format!("Key Exchange: {}\n", result.key_exchange.join(", ")));
+        
+        // PQC Information
+        output.push_str(&format!("PQC Detected: {}\n", result.pqc_detected));
+        if result.pqc_detected {
+            output.push_str(&format!("PQC Extensions: {:?}\n", result.pqc_extensions));
+        }
+        
+        // Certificate Information
+        output.push_str(&format!("Certificate Visible: {}\n", result.certificate_visible));
+        if let Some(ref cert) = result.certificate {
+            output.push_str(&format!("Certificate Subject: {}\n", cert.subject));
+            output.push_str(&format!("Certificate Issuer: {}\n", cert.issuer));
+            output.push_str(&format!("Certificate Valid From: {}\n", cert.valid_from));
+            output.push_str(&format!("Certificate Valid To: {}\n", cert.valid_to));
+            output.push_str(&format!("Certificate Public Key Algorithm: {}\n", cert.public_key_algorithm));
+            output.push_str(&format!("Certificate Signature Algorithm: {}\n", cert.signature_algorithm));
+            if let Some(key_size) = cert.key_size {
+                output.push_str(&format!("Certificate Key Size: {} bits\n", key_size));
+            }
+        }
+        
+        // TLS Features
+        output.push_str(&format!("TLS Features: {:?}\n", result.tls_features));
+        
+        // Extension Mapping
+        output.push_str("\nExtension Negotiation Mapping:\n");
+        output.push_str(&format!("  Key Share: {}\n", self.format_extension_status(&result.extension_map.key_share)));
+        output.push_str(&format!("  Supported Versions: {}\n", self.format_extension_status(&result.extension_map.supported_versions)));
+        output.push_str(&format!("  Signature Algorithms: {}\n", self.format_extension_status(&result.extension_map.signature_algorithms)));
+        output.push_str(&format!("  ALPN Protocols: {}\n", self.format_alpn_protocols(&result.extension_map.alpn_protocols)));
+        output.push_str(&format!("  OCSP Stapling: {}\n", self.format_extension_status(&result.extension_map.ocsp_stapling)));
+        output.push_str(&format!("  Session Ticket: {}\n", self.format_extension_status(&result.extension_map.session_ticket)));
+        output.push_str(&format!("  PSK Key Exchange Modes: {}\n", self.format_extension_status(&result.extension_map.psk_key_exchange_modes)));
+        output.push_str(&format!("  Early Data: {}\n", self.format_extension_status(&result.extension_map.early_data)));
+        output.push_str(&format!("  Pre-Shared Key: {}\n", self.format_extension_status(&result.extension_map.pre_shared_key)));
+        
+        // Analysis
+        output.push_str(&format!("\nAnalysis:\n"));
+        output.push_str(&format!("  Security Level: {}\n", result.analysis.security_level));
+        output.push_str(&format!("  Hybrid Detected: {}\n", result.analysis.hybrid_detected));
+        output.push_str(&format!("  Classical Fallback Available: {}\n", result.analysis.classical_fallback_available));
+        
+        // Security Scoring
+        output.push_str(&format!("\nSecurity Scoring:\n"));
+        output.push_str(&format!("  Overall Score: {}/100\n", result.security_score.overall));
+        output.push_str(&format!("  TLS Score: {}/100\n", result.security_score.tls));
+        output.push_str(&format!("  Certificate Score: {}/100\n", result.security_score.certificate));
+        output.push_str(&format!("  PQC Score: {}/100\n", result.security_score.pqc));
+        
+        // Detailed Security Breakdown
+        output.push_str(&format!("\nDetailed Security Breakdown:\n"));
+        output.push_str(&format!("  TLS Version: {}/100\n", result.security_score.details.tls_version));
+        output.push_str(&format!("  Cipher Suite: {}/100\n", result.security_score.details.cipher_suite));
+        output.push_str(&format!("  Key Exchange: {}/100\n", result.security_score.details.key_exchange));
+        output.push_str(&format!("  Certificate Validation: {}/100\n", result.security_score.details.certificate_validation));
+        output.push_str(&format!("  Certificate Key Strength: {}/100\n", result.security_score.details.certificate_key_strength));
+        output.push_str(&format!("  PQC Algorithm: {}/100\n", result.security_score.details.pqc_algorithm));
+        output.push_str(&format!("  PQC Implementation: {}/100\n", result.security_score.details.pqc_implementation));
+        output.push_str(&format!("  Hybrid Security: {}/100\n", result.security_score.details.hybrid_security));
+        
+        // Timing
+        if let Some(duration) = result.handshake_duration_ms {
+            output.push_str(&format!("Handshake Duration: {} ms\n", duration));
+        }
+        
+        // Security Warnings
+        if !result.security_warnings.is_empty() {
+            output.push_str(&format!("\nSecurity Warnings:\n"));
+            for warning in &result.security_warnings {
+                output.push_str(&format!("  [{}] {}: {}\n", 
+                    warning.level.to_string().to_uppercase(), 
+                    warning.category, 
+                    warning.message));
+                if let Some(ref recommendation) = warning.recommendation {
+                    output.push_str(&format!("    Recommendation: {}\n", recommendation));
+                }
+            }
+        }
+        
+        // Performance Warnings
+        if !result.performance_warnings.is_empty() {
+            output.push_str(&format!("\nPerformance Warnings:\n"));
+            for warning in &result.performance_warnings {
+                output.push_str(&format!("  [{}] {}: {}\n", 
+                    warning.level.to_string().to_uppercase(), 
+                    warning.category, 
+                    warning.message));
+                output.push_str(&format!("    Impact: {}\n", warning.impact));
+                if let Some(ref recommendation) = warning.recommendation {
+                    output.push_str(&format!("    Recommendation: {}\n", recommendation));
+                }
+            }
+        }
+        
+        output
+    }
+
+    fn format_extension_status(&self, status: &bool) -> String {
+        if *status {
+            "present".to_string()
+        } else {
+            "not_present".to_string()
+        }
+    }
+
+    fn format_alpn_protocols(&self, protocols: &[String]) -> String {
+        if protocols.is_empty() {
+            "none".to_string()
+        } else {
+            protocols.join(", ")
+        }
+    }
+}
+
+pub fn output_results(result: &ScanResult, format: OutputFormat) {
+    let formatter = OutputFormatter::new();
+    let output = formatter.format_result(result, format);
+    println!("{}", output);
 }
 
 /// Generate a comprehensive report in markdown format
@@ -245,9 +308,15 @@ mod tests {
             pqc_extensions: PqcExtensions::default(),
             certificate_info: Some(CertificateInfo {
                 subject: "CN=example.com".to_string(),
+                issuer: "CN=Example CA".to_string(),
                 public_key_algorithm: "rsa".to_string(),
                 signature_algorithm: "sha256WithRSAEncryption".to_string(),
                 key_size: Some(2048),
+                valid_from: "2023-01-01".to_string(),
+                valid_to: "2024-01-01".to_string(),
+                san: Some("example.com, *.example.com".to_string()),
+                certificate_length_estimate: Some(1500),
+                algorithm_consistency: true,
             }),
             raw_server_hello: Vec::new(),
             raw_certificate: Vec::new(),
@@ -258,6 +327,7 @@ mod tests {
             tls_features: TlsFeatures::default(),
             handshake_duration_ms: Some(150),
             client_profile_used: HandshakeProfile::CloudflarePqc,
+            extension_map: crate::types::ExtensionMap::default(),
         };
 
         result.update_from_handshake(handshake_result);

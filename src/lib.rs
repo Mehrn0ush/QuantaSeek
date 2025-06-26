@@ -33,19 +33,21 @@
 pub mod constants;
 pub mod detector;
 pub mod handshake;
-pub mod parser;
 pub mod output;
 pub mod types;
 pub mod cert;
 pub mod signature_detector;
+pub mod security_scoring;
 
 // Re-export main types for easier access
 pub use types::{
     HandshakeProfile, HandshakeResult, PqcAnalysis, PqcExtensions, 
     TlsFeatures, CertificateInfo, ScanResult, OutputFormat, FallbackInfo, ClientProfile,
-    SignatureNegotiationStatus
+    SignatureNegotiationStatus, ExtensionMap, SecurityScore
 };
 pub use handshake::HandshakeEngine;
 pub use output::output_results;
 pub use detector::PqcDetector;
-pub use signature_detector::SignatureDetector; 
+pub use output::OutputFormatter;
+pub use signature_detector::SignatureDetector;
+pub use security_scoring::SecurityScorer; 

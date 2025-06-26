@@ -1,5 +1,4 @@
 use crate::types::{SignatureNegotiationStatus, PqcAnalysis};
-use std::collections::HashMap;
 
 /// PQC Signature Detector for TLS 1.3 without decryption
 pub struct SignatureDetector;
@@ -35,12 +34,12 @@ impl SignatureDetector {
     /// Estimate signature algorithm from certificate length
     pub fn estimate_from_certificate_length(&self, length: u32) -> Option<String> {
         match length {
-            60..=80 => Some("ECDSA secp256r1".to_string()),
+            60..=70 => Some("ECDSA secp256r1".to_string()),
+            71..=80 => Some("ECDSA secp256r1".to_string()),
             128..=256 => Some("RSA 2048".to_string()),
-            2400..=3000 => Some("Dilithium2".to_string()),
-            3000..=4000 => Some("Dilithium3".to_string()),
+            2400..=2999 => Some("Dilithium2".to_string()),
+            3000..=3999 => Some("Dilithium3".to_string()),
             4000..=5000 => Some("Dilithium5".to_string()),
-            60..=70 => Some("Falcon512".to_string()),
             1000..=1200 => Some("Falcon1024".to_string()),
             8000..=30000 => Some("SPHINCS+".to_string()),
             _ => None,
@@ -50,8 +49,8 @@ impl SignatureDetector {
     /// Detect PQC signature from CertificateVerify record length
     pub fn detect_from_certificate_verify_length(&self, length: u32) -> Option<String> {
         match length {
-            2400..=3000 => Some("Dilithium2".to_string()),
-            3000..=4000 => Some("Dilithium3".to_string()),
+            2400..=2999 => Some("Dilithium2".to_string()),
+            3000..=3999 => Some("Dilithium3".to_string()),
             4000..=5000 => Some("Dilithium5".to_string()),
             60..=70 => Some("Falcon512".to_string()),
             1000..=1200 => Some("Falcon1024".to_string()),
@@ -96,6 +95,17 @@ impl SignatureDetector {
         } else {
             Some(fingerprint_parts.join("-"))
         }
+    }
+
+    /// Generate server endpoint fingerprint with TLS version awareness
+    pub fn generate_endpoint_fingerprint_with_version(&self, hostname: &str, key_exchange: &[String], cipher_suite: &str, tls_version: &str) -> Option<String> {
+        // For TLS 1.2, don't generate PQC-related fingerprints
+        if tls_version == "1.2" {
+            println!("DEBUG: TLS 1.2 detected - not generating PQC fingerprint");
+            return None;
+        }
+        
+        self.generate_endpoint_fingerprint(hostname, key_exchange, cipher_suite)
     }
 
     /// Analyze signature negotiation status
@@ -185,19 +195,20 @@ impl SignatureDetector {
         
         if !pqc_signatures.is_empty() {
             analysis.pqc_signature_algorithms.extend(pqc_signatures);
-            analysis.pqc_signature_used = true;
+            // Only set pqc_signature_used to true if we can confirm actual usage
+            // For now, we'll set it based on negotiation status
         }
         
         // Estimate signature algorithm from certificate length
         if let Some(length) = certificate_length {
-            analysis.certificate_length_estimate = Some(length);
             if let Some(alg) = self.estimate_from_certificate_length(length) {
                 analysis.pqc_signature_algorithm = Some(alg);
+                // Only set pqc_signature_used to true if we have a confirmed algorithm
                 analysis.pqc_signature_used = true;
             }
         }
         
-        // Generate endpoint fingerprint
+        // Generate endpoint fingerprint (this will be overridden by the caller with version awareness)
         analysis.server_endpoint_fingerprint = self.generate_endpoint_fingerprint(
             hostname, key_exchange, cipher_suite
         );
@@ -207,6 +218,12 @@ impl SignatureDetector {
             offered_signatures,
             certificate_length,
             analysis.server_endpoint_fingerprint.as_deref()
+        );
+        
+        // Set pqc_signature_used based on negotiation status
+        analysis.pqc_signature_used = matches!(
+            analysis.signature_negotiation_status,
+            SignatureNegotiationStatus::Negotiated
         );
         
         // Update signature status string

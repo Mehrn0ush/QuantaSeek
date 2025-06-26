@@ -14,6 +14,11 @@ impl PqcDetector {
 
     /// Determines if PQC is detected based on handshake results
     pub fn detect_pqc(&self, handshake_result: &HandshakeResult) -> bool {
+        // If TLS 1.2 is detected, PQC is not possible
+        if handshake_result.tls_version == "1.2" {
+            return false;
+        }
+        
         self.detect_pqc_key_exchange(handshake_result) ||
         self.detect_pqc_extensions(handshake_result) ||
         self.detect_pqc_certificate(handshake_result)
@@ -116,9 +121,9 @@ impl PqcDetector {
     /// Provides detailed analysis of PQC support
     pub fn analyze_pqc_support(&self, handshake_result: &HandshakeResult) -> PqcAnalysis {
         let mut analysis = PqcAnalysis {
-            tls_version: String::new(),
-            cipher_suite: String::new(),
-            key_exchange: String::new(),
+            tls_version: handshake_result.tls_version.clone(),
+            cipher_suite: handshake_result.cipher_suite.clone(),
+            key_exchange: handshake_result.key_exchange.join(", "),
             pqc_detected: false,
             pqc_key_exchange: Vec::new(),
             pqc_signature_algorithms: Vec::new(),
@@ -126,12 +131,11 @@ impl PqcDetector {
             pqc_public_key_algorithms: Vec::new(),
             pqc_extensions: Vec::new(),
             security_features: Vec::new(),
-            security_level: String::new(),
+            security_level: "Unknown".to_string(),
             hybrid_detected: false,
             classical_fallback_available: false,
             pqc_signature_used: false,
             pqc_signature_algorithm: None,
-            certificate_length_estimate: None,
             signature_negotiation_status: SignatureNegotiationStatus::Unknown,
             server_endpoint_fingerprint: None,
         };
@@ -162,11 +166,18 @@ impl PqcDetector {
             if self.is_pqc_signature_algorithm(&cert_info.signature_algorithm) {
                 analysis.pqc_signature_algorithms.push(cert_info.signature_algorithm.clone());
                 analysis.pqc_detected = true;
+                analysis.pqc_signature_algorithm = Some(cert_info.signature_algorithm.clone());
             }
 
             if self.is_pqc_public_key_algorithm(&cert_info.public_key_algorithm) {
                 analysis.pqc_public_key_algorithms.push(cert_info.public_key_algorithm.clone());
                 analysis.pqc_detected = true;
+            }
+
+            // Validate hostname against certificate
+            let hostname_valid = self.validate_hostname(&handshake_result.target, cert_info);
+            if !hostname_valid {
+                analysis.security_features.push("Hostname Mismatch".to_string());
             }
         }
 
@@ -175,13 +186,25 @@ impl PqcDetector {
 
         // Set a clear status for signature algorithms
         if !analysis.pqc_signature_algorithms.is_empty() {
-            analysis.pqc_signature_status = "Detected".to_string();
+            if handshake_result.tls_version == "1.3" && handshake_result.certificate_visible {
+                analysis.pqc_signature_status = "Offered by client".to_string();
+                analysis.signature_negotiation_status = SignatureNegotiationStatus::NotOffered;
+            } else if handshake_result.tls_version == "1.3" && !handshake_result.certificate_visible {
+                analysis.pqc_signature_status = "Not visible (encrypted in TLS 1.3)".to_string();
+                analysis.signature_negotiation_status = SignatureNegotiationStatus::Unknown;
+            } else {
+                analysis.pqc_signature_status = "Detected".to_string();
+                analysis.signature_negotiation_status = SignatureNegotiationStatus::Negotiated;
+            }
         } else if !handshake_result.certificate_visible && handshake_result.tls_version == "1.3" {
-            analysis.pqc_signature_status = "Not visible (Encrypted in TLS 1.3)".to_string();
+            analysis.pqc_signature_status = "Not visible (encrypted in TLS 1.3)".to_string();
+            analysis.signature_negotiation_status = SignatureNegotiationStatus::Unknown;
         } else if handshake_result.certificate_visible {
             analysis.pqc_signature_status = "None found".to_string();
+            analysis.signature_negotiation_status = SignatureNegotiationStatus::NotOffered;
         } else {
             analysis.pqc_signature_status = "Not applicable".to_string();
+            analysis.signature_negotiation_status = SignatureNegotiationStatus::NotOffered;
         }
 
         analysis
@@ -242,6 +265,24 @@ impl PqcDetector {
         // Analyze TLS version
         self.analyze_tls_version(result, &mut analysis);
         
+        // If TLS 1.2 is detected, disable PQC detection and enable classical fallback
+        if result.tls_version == "1.2" {
+            println!("TLS 1.2 detected - disabling PQC detection and enabling classical fallback");
+            analysis.pqc_detected = false;
+            analysis.hybrid_detected = false;
+            analysis.classical_fallback_available = true;
+            analysis.security_level = "Classical".to_string();
+            analysis.pqc_signature_used = false;
+            analysis.signature_negotiation_status = SignatureNegotiationStatus::NotOffered;
+            analysis.pqc_signature_status = "Not applicable (TLS 1.2)".to_string();
+            
+            // Still analyze basic TLS information
+            self.analyze_cipher_suite(result, &mut analysis);
+            self.analyze_key_exchange(result, &mut analysis);
+            
+            return analysis;
+        }
+        
         // Analyze cipher suite
         self.analyze_cipher_suite(result, &mut analysis);
         
@@ -253,6 +294,26 @@ impl PqcDetector {
         
         // Enhanced PQC signature detection using SignatureDetector
         self.analyze_signatures(result, &mut analysis);
+        
+        // Analyze certificate information
+        if let Some(ref cert_info) = result.certificate_info {
+            // Check for PQC public key algorithms
+            if self.is_pqc_signature_algorithm(&cert_info.public_key_algorithm) {
+                analysis.pqc_public_key_algorithms.push(cert_info.public_key_algorithm.clone());
+            }
+            
+            // Check for PQC signature algorithms
+            if self.is_pqc_signature_algorithm(&cert_info.signature_algorithm) {
+                analysis.pqc_signature_algorithms.push(cert_info.signature_algorithm.clone());
+                // Set the actual PQC signature algorithm used
+                analysis.pqc_signature_algorithm = Some(cert_info.signature_algorithm.clone());
+            }
+            
+            // Validate hostname against certificate
+            if !self.validate_hostname(&result.target, cert_info) {
+                analysis.security_features.push("Hostname Mismatch".to_string());
+            }
+        }
         
         // Determine overall security level
         self.determine_security_level(&mut analysis);
@@ -324,82 +385,71 @@ impl PqcDetector {
     }
 
     fn analyze_key_exchange(&self, result: &HandshakeResult, analysis: &mut PqcAnalysis) {
+        let mut has_classical = false;
+        let mut has_pqc = false;
+        
         for key_exchange in &result.key_exchange {
             match key_exchange.as_str() {
-                "x25519" => {
+                "x25519" | "X25519" => {
                     analysis.key_exchange = "X25519".to_string();
                     analysis.security_features.push("X25519".to_string());
                     analysis.classical_fallback_available = true;
+                    has_classical = true;
                 }
                 "secp256r1" => {
                     analysis.key_exchange = "SECP256R1".to_string();
                     analysis.security_features.push("SECP256R1".to_string());
                     analysis.classical_fallback_available = true;
+                    has_classical = true;
                 }
-                "X25519+ML-KEM768" => {
-                    analysis.key_exchange = "X25519+ML-KEM768".to_string();
-                    analysis.pqc_key_exchange.push("X25519+ML-KEM768".to_string());
+                "ML-KEM-768" | "ML-KEM-512" | "ML-KEM-1024" => {
+                    analysis.key_exchange = key_exchange.to_string();
+                    analysis.pqc_key_exchange.push(key_exchange.to_string());
                     analysis.pqc_detected = true;
-                    analysis.hybrid_detected = true;
-                    analysis.classical_fallback_available = true;
+                    has_pqc = true;
                 }
-                "X25519+Kyber768Draft00" => {
-                    analysis.key_exchange = "X25519+Kyber768Draft00".to_string();
-                    analysis.pqc_key_exchange.push("X25519+Kyber768Draft00".to_string());
+                "Kyber768" | "Kyber512" | "Kyber1024" => {
+                    analysis.key_exchange = key_exchange.to_string();
+                    analysis.pqc_key_exchange.push(key_exchange.to_string());
                     analysis.pqc_detected = true;
-                    analysis.hybrid_detected = true;
-                    analysis.classical_fallback_available = true;
-                }
-                "X25519+Kyber512Draft00" => {
-                    analysis.key_exchange = "X25519+Kyber512Draft00".to_string();
-                    analysis.pqc_key_exchange.push("X25519+Kyber512Draft00".to_string());
-                    analysis.pqc_detected = true;
-                    analysis.hybrid_detected = true;
-                    analysis.classical_fallback_available = true;
-                }
-                "Kyber768" => {
-                    analysis.key_exchange = "Kyber768".to_string();
-                    analysis.pqc_key_exchange.push("Kyber768".to_string());
-                    analysis.pqc_detected = true;
-                }
-                "unknown(0x11ec)" => {
-                    analysis.key_exchange = "X25519+ML-KEM768".to_string();
-                    analysis.pqc_key_exchange.push("X25519+ML-KEM768".to_string());
-                    analysis.pqc_detected = true;
-                    analysis.hybrid_detected = true;
-                    analysis.classical_fallback_available = true;
-                }
-                "unknown(0xfe30)" => {
-                    analysis.key_exchange = "X25519+Kyber768".to_string();
-                    analysis.pqc_key_exchange.push("X25519+Kyber768".to_string());
-                    analysis.pqc_detected = true;
-                    analysis.hybrid_detected = true;
-                    analysis.classical_fallback_available = true;
-                }
-                "unknown(0x001c)" => {
-                    analysis.key_exchange = "Kyber768".to_string();
-                    analysis.pqc_key_exchange.push("Kyber768".to_string());
-                    analysis.pqc_detected = true;
+                    has_pqc = true;
                 }
                 key if key.contains("kyber") => {
                     analysis.key_exchange = key.to_string();
                     analysis.pqc_key_exchange.push(key.to_string());
                     analysis.pqc_detected = true;
+                    has_pqc = true;
                 }
                 key if key.contains("mlkem") => {
                     analysis.key_exchange = key.to_string();
                     analysis.pqc_key_exchange.push(key.to_string());
                     analysis.pqc_detected = true;
+                    has_pqc = true;
                 }
                 key if key.contains("dilithium") => {
                     analysis.key_exchange = key.to_string();
                     analysis.pqc_key_exchange.push(key.to_string());
                     analysis.pqc_detected = true;
+                    has_pqc = true;
                 }
                 _ => {
                     analysis.key_exchange = key_exchange.to_string();
                 }
             }
+        }
+        
+        // Detect hybrid mode if both classical and PQC algorithms are present
+        if has_classical && has_pqc {
+            analysis.hybrid_detected = true;
+            analysis.classical_fallback_available = true;
+        }
+        
+        // If we detected PQC but TLS version is 1.2, this indicates a fallback scenario
+        if analysis.pqc_detected && result.tls_version == "1.2" {
+            println!("PQC detected but TLS 1.2 fallback occurred - this indicates server rejected PQC");
+            analysis.pqc_detected = false;
+            analysis.hybrid_detected = false;
+            analysis.classical_fallback_available = true;
         }
     }
 
@@ -436,13 +486,20 @@ impl PqcDetector {
             &result.key_exchange,
             &result.cipher_suite
         );
+        
+        // Generate endpoint fingerprint with TLS version awareness
+        analysis.server_endpoint_fingerprint = self.signature_detector.generate_endpoint_fingerprint_with_version(
+            hostname, 
+            &result.key_exchange, 
+            &result.cipher_suite,
+            &result.tls_version
+        );
     }
 
     fn determine_security_level(&self, analysis: &mut PqcAnalysis) {
         if analysis.pqc_detected {
-            if analysis.classical_fallback_available {
+            if analysis.hybrid_detected {
                 analysis.security_level = "Hybrid PQC".to_string();
-                analysis.hybrid_detected = true;
             } else {
                 analysis.security_level = "PQC Only".to_string();
             }
@@ -451,6 +508,78 @@ impl PqcDetector {
         } else {
             analysis.security_level = "Classical".to_string();
         }
+    }
+
+    fn estimate_certificate_length(&self, cert_info: &crate::types::CertificateInfo) -> u32 {
+        // Estimate certificate length based on key size and algorithm
+        let base_length = match cert_info.public_key_algorithm.as_str() {
+            "RSA" => {
+                // RSA certificates are typically larger due to key size
+                cert_info.key_size.unwrap_or(2048) / 8 + 100 // Rough estimate
+            },
+            "ECDSA" | "ECDSA P-256" => {
+                // ECDSA certificates are smaller
+                256 / 8 + 50 // Rough estimate
+            },
+            "Dilithium2" => 1312,
+            "Dilithium3" => 1952,
+            "Dilithium5" => 2592,
+            "Falcon-512" => 896,
+            "Falcon-1024" => 1792,
+            _ => {
+                // Default estimate based on key size
+                cert_info.key_size.unwrap_or(256) / 8 + 100
+            }
+        };
+        
+        // Add overhead for signature, extensions, etc.
+        let total_length = base_length + 200; // Additional overhead
+        
+        total_length as u32
+    }
+
+    fn validate_hostname(&self, target_hostname: &str, cert_info: &crate::types::CertificateInfo) -> bool {
+        // Extract hostname from target (remove port if present)
+        let hostname = target_hostname.split(':').next().unwrap_or(target_hostname);
+        
+        // Check if hostname matches the certificate subject
+        if self.hostname_matches(hostname, &cert_info.subject) {
+            return true;
+        }
+        
+        // Check if hostname matches any SAN entries
+        if let Some(ref san) = cert_info.san {
+            if self.hostname_matches(hostname, san) {
+                return true;
+            }
+        }
+        
+        false
+    }
+    
+    fn hostname_matches(&self, hostname: &str, cert_field: &str) -> bool {
+        // Handle wildcard matching according to RFC 6125
+        if cert_field.starts_with("*.") {
+            let domain = &cert_field[2..]; // Remove "*. "
+            
+            // Wildcard can match the domain itself or one level subdomain
+            // *.pki.goog can match pki.goog or foo.pki.goog
+            if hostname == domain {
+                return true; // Exact domain match
+            }
+            
+            if hostname.ends_with(domain) {
+                let prefix = &hostname[..hostname.len() - domain.len()];
+                // Check that there's exactly one level (no dots in prefix)
+                if !prefix.contains('.') && !prefix.is_empty() {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        // Exact match
+        hostname == cert_field
     }
 }
 
@@ -526,6 +655,7 @@ mod tests {
             tls_features: TlsFeatures::default(),
             handshake_duration_ms: None,
             client_profile_used: HandshakeProfile::Standard,
+            extension_map: crate::types::ExtensionMap::default(),
         };
         
         let analysis = detector.analyze_pqc_support(&handshake_result);
