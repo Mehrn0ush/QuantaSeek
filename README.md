@@ -342,7 +342,7 @@ pub enum HandshakeProfile {
 ### Development Setup
 ```bash
 # Clone and setup
-git clone https://github.com/your-username/QuantaSeek.git
+git clone https://github.com/Mehrn0ush/QuantaSeek.git
 cd QuantaSeek
 
 # Install development dependencies
@@ -385,14 +385,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 ### Issues and Questions
-- **GitHub Issues:** [Create an issue](https://github.com/your-username/QuantaSeek/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/your-username/QuantaSeek/discussions)
-- **Email:** security@your-domain.com
+- **GitHub Issues:** [Create an issue](https://github.com/Mehrn0ush/QuantaSeek/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/Mehrn0ush/QuantaSeek/discussions)
+- **Email:** Mehrnoush.vaseghi@gmail.com
 
-### Documentation
-- **API Reference:** [docs.rs/quanta-seek](https://docs.rs/quanta-seek)
-- **Examples:** [examples/](examples/) directory
-- **Blog Posts:** [Security Blog](https://your-blog.com/tags/quanta-seek)
+
 
 ## 🔮 Roadmap
 
