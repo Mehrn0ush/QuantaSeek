@@ -1,0 +1,206 @@
+# RUST_LOG=debug ./target/release/quantaseek google.com
+🔍 QuantaSeek PQC TLS Scanner
+Target: google.com
+Profile: CloudflarePqc
+Format: Json
+═══════════════════════════
+Using rustls with PQC support for google.com
+DEBUG: hostname='google.com', hostname_lower='google.com'
+DEBUG: contains cloudflare: false, contains pq: false
+DEBUG: fingerprint_parts: ["mlkem768"]
+DEBUG: hostname='google.com', hostname_lower='google.com'
+DEBUG: contains cloudflare: false, contains pq: false
+DEBUG: fingerprint_parts: ["mlkem768"]
+{
+  "target": "google.com",
+  "tls_version": "1.3",
+  "cipher_suite": "TLS13_AES_256_GCM_SHA384",
+  "key_exchange": [
+    "X25519",
+    "ML-KEM-768"
+  ],
+  "pqc_extensions": {
+    "kem": true,
+    "kem_group": true
+  },
+  "certificate": {
+    "subject": "*.google.com",
+    "issuer": "WE2",
+    "public_key_algorithm": "ECDSA",
+    "signature_algorithm": "ECDSA-SHA256",
+    "key_size": 256,
+    "valid_from": "Mon, 02 Jun 2025 08:35:40 +0000",
+    "valid_to": "Mon, 25 Aug 2025 08:35:39 +0000",
+    "san": "*.2mdn-cn.net, *.admob-cn.com, *.aistudio.google.com, *.ampproject.net.cn, *.ampproject.org.cn, *.android.com, *.android.google.cn, *.app-measurement-cn.com, *.appengine.google.com, *.bdn.dev, *.chrome.google.cn, *.cloud.google.com, *.crowdsource.google.com, *.dartsearch-cn.net, *.datacompute.google.com, *.developers.google.cn, *.doubleclick-cn.net, *.doubleclick.cn, *.flash.android.com, *.fls.doubleclick-cn.net, *.fls.doubleclick.cn, *.g.cn, *.g.co, *.g.doubleclick-cn.net, *.g.doubleclick.cn, *.gcp.gvt2.com, *.gcpcdn.gvt1.com, *.ggpht.cn, *.gkecnapps.cn, *.google-analytics-cn.com, *.google-analytics.com, *.google.ca, *.google.cl, *.google.co.in, *.google.co.jp, *.google.co.uk, *.google.com.ar, *.google.com.au, *.google.com.br, *.google.com.co, *.google.com.mx, *.google.com.tr, *.google.com.vn, *.google.de, *.google.es, *.google.fr, *.google.hu, *.google.it, *.google.nl, *.google.pl, *.google.pt, *.googleadservices-cn.com, *.googleapis-cn.com, *.googleapis.cn, *.googleapps-cn.com, *.googlecnapps.cn, *.googlecommerce.com, *.googledownloads.cn, *.googleflights-cn.net, *.googleoptimize-cn.com, *.googlesandbox-cn.com, *.googlesyndication-cn.com, *.googletagmanager-cn.com, *.googletagservices-cn.com, *.googletraveladservices-cn.com, *.googlevads-cn.com, *.googlevideo.com, *.gstatic-cn.com, *.gstatic.cn, *.gstatic.com, *.gvt1-cn.com, *.gvt1.com, *.gvt2-cn.com, *.gvt2.com, *.metric.gstatic.com, *.music.youtube.com, *.origin-test.bdn.dev, *.recaptcha-cn.net, *.recaptcha.net.cn, *.safeframe.googlesyndication-cn.com, *.safenup.googlesandbox-cn.com, *.urchin.com, *.url.google.com, *.widevine.cn, *.youtube-nocookie.com, *.youtube.com, *.youtubeeducation.com, *.youtubekids.com, *.yt.be, *.ytimg.com, 2mdn-cn.net, admob-cn.com, ai.android, ampproject.net.cn, ampproject.org.cn, android.clients.google.com, android.com, app-measurement-cn.com, dartsearch-cn.net, doubleclick-cn.net, doubleclick.cn, g.cn, g.co, ggpht.cn, gkecnapps.cn, goo.gl, google-analytics-cn.com, google-analytics.com, google.com, googleadservices-cn.com, googleapis-cn.com, googleapps-cn.com, googlecnapps.cn, googlecommerce.com, googledownloads.cn, googleflights-cn.net, googleoptimize-cn.com, googlesandbox-cn.com, googlesyndication-cn.com, googletagmanager-cn.com, googletagservices-cn.com, googletraveladservices-cn.com, googlevads-cn.com, gvt1-cn.com, gvt2-cn.com, music.youtube.com, recaptcha-cn.net, recaptcha.net.cn, urchin.com, widevine.cn, www.goo.gl, youtu.be, youtube.com, youtubeeducation.com, youtubekids.com, yt.be",
+    "certificate_length_estimate": 3440,
+    "algorithm_consistency": true
+  },
+  "tls_features": {
+    "alpn": [],
+    "early_data_status": "not_offered",
+    "session_ticket": false,
+    "ocsp_stapling": false
+  },
+  "certificate_visible": true,
+  "handshake_complete": true,
+  "pqc_detected": true,
+  "fallback": {
+    "attempted": false,
+    "succeeded": false,
+    "fallback_penalty_ms": null,
+    "attempts_count": 0,
+    "attempted_profiles": []
+  },
+  "analysis": {
+    "tls_version": "TLS 1.3",
+    "cipher_suite": "TLS13_AES_256_GCM_SHA384",
+    "key_exchange": "ML-KEM-768",
+    "pqc_detected": true,
+    "pqc_key_exchange": [
+      "ML-KEM-768"
+    ],
+    "pqc_signature_algorithms": [
+      "Dilithium2",
+      "Dilithium3",
+      "Falcon512",
+      "Falcon1024"
+    ],
+    "pqc_signature_status": "Unknown (encrypted in TLS 1.3)",
+    "pqc_public_key_algorithms": [],
+    "pqc_extensions": [
+      "KEM",
+      "KEM_GROUP"
+    ],
+    "security_features": [
+      "TLS 1.3",
+      "X25519"
+    ],
+    "security_level": "Hybrid PQC",
+    "hybrid_detected": true,
+    "classical_fallback_available": true,
+    "pqc_signature_used": false,
+    "pqc_signature_algorithm": null,
+    "signature_negotiation_status": "unknown",
+    "server_endpoint_fingerprint": "mlkem768"
+  },
+  "handshake_duration_ms": 358,
+  "client_profile_used": "CloudflarePqc",
+  "total_scan_duration_ms": 565,
+  "adaptive_fingerprinting": false,
+  "server_fingerprint": null,
+  "extension_map": {
+    "key_share": true,
+    "supported_versions": true,
+    "signature_algorithms": true,
+    "alpn_protocols": [],
+    "ocsp_stapling": false,
+    "session_ticket": false,
+    "psk_key_exchange_modes": false,
+    "early_data": false,
+    "pre_shared_key": false
+  },
+  "security_score": {
+    "tls": 97,
+    "certificate": 90,
+    "pqc": 100,
+    "overall": 96,
+    "details": {
+      "tls_version": 100,
+      "cipher_suite": 100,
+      "key_exchange": 92,
+      "certificate_validation": 90,
+      "certificate_key_strength": 90,
+      "pqc_algorithm": 100,
+      "pqc_implementation": 100,
+      "hybrid_security": 100
+    },
+    "formula": {
+      "overall_method": "Overall = TLS(97) + Certificate(90) + PQC(100) = 97×0.30 + 90×0.25 + 100×0.45 = 96",
+      "tls_method": "TLS = Version(100)×0.40 + Cipher(100)×0.30 + KeyExchange(92)×0.30 = 100×0.40 + 100×0.30 + 92×0.30 = 97",
+      "certificate_method": "Certificate = (Validation(90) + KeyStrength(90)) / 2 = (90 + 90) / 2 = 90",
+      "pqc_method": "PQC = (Algorithm(100) + Implementation(100) + Hybrid(100)) / 3 = (100 + 100 + 100) / 3 = 100",
+      "pqc_weights": "TLS: 30%, Certificate: 25%, PQC: 45%",
+      "classical_weights": "TLS: 50%, Certificate: 50%"
+    },
+    "weights": {
+      "overall_pqc": {
+        "tls_percentage": 30,
+        "certificate_percentage": 25,
+        "pqc_percentage": 45
+      },
+      "overall_classical": {
+        "tls_percentage": 50,
+        "certificate_percentage": 50,
+        "pqc_percentage": 0
+      },
+      "tls_component": {
+        "version_percentage": 40,
+        "cipher_percentage": 30,
+        "key_exchange_percentage": 30
+      },
+      "certificate_component": {
+        "validation_percentage": 50,
+        "key_strength_percentage": 50
+      },
+      "pqc_component": {
+        "algorithm_percentage": 33,
+        "implementation_percentage": 33,
+        "hybrid_percentage": 34
+      }
+    },
+    "pqc_strength": {
+      "algorithms": [
+        {
+          "name": "ML-KEM-768",
+          "security_bits": 192,
+          "nist_level": "Level 2",
+          "score": 95
+        },
+        {
+          "name": "Dilithium2",
+          "security_bits": 128,
+          "nist_level": "Level 1",
+          "score": 90
+        },
+        {
+          "name": "Dilithium3",
+          "security_bits": 192,
+          "nist_level": "Level 2",
+          "score": 95
+        },
+        {
+          "name": "Falcon512",
+          "security_bits": 192,
+          "nist_level": "Level 2",
+          "score": 95
+        },
+        {
+          "name": "Falcon1024",
+          "security_bits": 256,
+          "nist_level": "Level 3",
+          "score": 100
+        }
+      ],
+      "overall_level": "Maximum Security (256+ bits)",
+      "security_bits": 256,
+      "nist_level": "Level 3"
+    }
+  },
+  "security_warnings": [
+    {
+      "level": "warning",
+      "category": "Certificate SAN",
+      "message": "Certificate contains 136 SAN entries, which may impact performance",
+      "recommendation": "Consider reducing the number of SAN entries to improve handshake performance"
+    }
+  ],
+  "performance_warnings": [
+    {
+      "level": "warning",
+      "category": "Certificate Size",
+      "message": "Large certificate detected: 3440 bytes",
+      "impact": "Large certificates increase handshake overhead and may impact performance",
+      "recommendation": "Consider using smaller certificates or reducing the number of SAN entries"
+    }
+  ]
+}

@@ -1,0 +1,220 @@
+# RUST_LOG=debug ./target/release/quantaseek pqc-demo.cryptoserver.dev
+🔍 QuantaSeek PQC TLS Scanner
+Target: pqc-demo.cryptoserver.dev
+Profile: CloudflarePqc
+Format: Json
+═══════════════════════════
+Using rustls with PQC support for pqc-demo.cryptoserver.dev
+DEBUG: hostname='pqc-demo.cryptoserver.dev', hostname_lower='pqc-demo.cryptoserver.dev'
+DEBUG: contains cloudflare: false, contains pq: true
+DEBUG: fingerprint_parts: ["mlkem768"]
+DEBUG: hostname='pqc-demo.cryptoserver.dev', hostname_lower='pqc-demo.cryptoserver.dev'
+DEBUG: contains cloudflare: false, contains pq: true
+DEBUG: fingerprint_parts: ["mlkem768"]
+{
+  "target": "pqc-demo.cryptoserver.dev",
+  "tls_version": "1.3",
+  "cipher_suite": "TLS13_AES_256_GCM_SHA384",
+  "key_exchange": [
+    "X25519",
+    "ML-KEM-768"
+  ],
+  "pqc_extensions": {
+    "kem": true,
+    "kem_group": true
+  },
+  "certificate": {
+    "subject": "futurjiparty.co.uk",
+    "issuer": "R10",
+    "public_key_algorithm": "RSA",
+    "signature_algorithm": "RSA-SHA256",
+    "key_size": 4144,
+    "valid_from": "Sat, 21 Jun 2025 14:04:14 +0000",
+    "valid_to": "Fri, 19 Sep 2025 14:04:13 +0000",
+    "san": "*.52xx.club, *.abonnementv.com, *.analytic.wareed.co, *.art.usar.site, *.batemansbay.com.au, *.blog.yorokaji.info, *.bvnkkh.xyz, *.caltextradingplatform.com, *.casinogold.buzz, *.cl.yorokaji.info, *.congestiveheartfailure658509.icu, *.corah.live, *.correio.52xx.club, *.cpcontacts.corah.live, *.cryptoserver.dev, *.datafree.hollywoodsbets.net, *.email.vleupload.online, *.filmin.online, *.freetar.life, *.ftp.wwwafbshop.de, *.futurjiparty.co.uk, *.gw.vleupload.online, *.hollywoodsbets.net, *.hostmaster.52xx.club, *.inbound.batemansbay.com.au, *.juiceandjuicer.com, *.juicerblender.juiceandjuicer.com, *.lasershipcourier.com, *.m.y29.info, *.mail.corah.live, *.mailin1.filmin.online, *.mbox.vleupload.online, *.melicacy.biz, *.metrics.lasershipcourier.com, *.mhi.melicacy.biz, *.mx7.hollywoodsbets.net, *.pay.freetar.life, *.phak.melicacy.biz, *.plus.uunsplash.com, *.pop.lasershipcourier.com, *.psb.yorokaji.info, *.reports.lasershipcourier.com, *.sentral.batemansbay.com.au, *.server.batemansbay.com.au, *.sitemaps.52xx.club, *.staging.52xx.club, *.thor.vleupload.online, *.usar.site, *.uunsplash.com, *.vleupload.online, *.voirserie.eu, *.wareed.co, *.webdisk.corah.live, *.website.bvnkkh.xyz, *.ww25.bvnkkh.xyz, *.ww25.congestiveheartfailure658509.icu, *.ww38.batemansbay.com.au, *.ww38.voirserie.eu, *.www.caltextradingplatform.com, *.wwwafbshop.de, *.x.y29.info, *.y29.info, *.yorokaji.info, *.z.y29.info, 52xx.club, abonnementv.com, batemansbay.com.au, bvnkkh.xyz, caltextradingplatform.com, casinogold.buzz, congestiveheartfailure658509.icu, corah.live, cryptoserver.dev, filmin.online, freetar.life, futurjiparty.co.uk, hollywoodsbets.net, juiceandjuicer.com, lasershipcourier.com, melicacy.biz, usar.site, uunsplash.com, vleupload.online, voirserie.eu, wareed.co, wwwafbshop.de, y29.info, yorokaji.info",
+    "certificate_length_estimate": 3355,
+    "algorithm_consistency": true
+  },
+  "tls_features": {
+    "alpn": [],
+    "early_data_status": "not_offered",
+    "session_ticket": false,
+    "ocsp_stapling": false
+  },
+  "certificate_visible": true,
+  "handshake_complete": true,
+  "pqc_detected": true,
+  "fallback": {
+    "attempted": false,
+    "succeeded": false,
+    "fallback_penalty_ms": null,
+    "attempts_count": 0,
+    "attempted_profiles": []
+  },
+  "analysis": {
+    "tls_version": "TLS 1.3",
+    "cipher_suite": "TLS13_AES_256_GCM_SHA384",
+    "key_exchange": "ML-KEM-768",
+    "pqc_detected": true,
+    "pqc_key_exchange": [
+      "ML-KEM-768"
+    ],
+    "pqc_signature_algorithms": [
+      "Dilithium2",
+      "Dilithium3",
+      "Falcon512",
+      "Falcon1024"
+    ],
+    "pqc_signature_status": "Unknown (encrypted in TLS 1.3)",
+    "pqc_public_key_algorithms": [],
+    "pqc_extensions": [
+      "KEM",
+      "KEM_GROUP"
+    ],
+    "security_features": [
+      "TLS 1.3",
+      "X25519",
+      "Hostname Mismatch"
+    ],
+    "security_level": "Hybrid PQC",
+    "hybrid_detected": true,
+    "classical_fallback_available": true,
+    "pqc_signature_used": false,
+    "pqc_signature_algorithm": null,
+    "signature_negotiation_status": "unknown",
+    "server_endpoint_fingerprint": "mlkem768"
+  },
+  "handshake_duration_ms": 700,
+  "client_profile_used": "CloudflarePqc",
+  "total_scan_duration_ms": 704,
+  "adaptive_fingerprinting": false,
+  "server_fingerprint": null,
+  "extension_map": {
+    "key_share": true,
+    "supported_versions": true,
+    "signature_algorithms": true,
+    "alpn_protocols": [],
+    "ocsp_stapling": false,
+    "session_ticket": false,
+    "psk_key_exchange_modes": false,
+    "early_data": false,
+    "pre_shared_key": false
+  },
+  "security_score": {
+    "tls": 97,
+    "certificate": 80,
+    "pqc": 100,
+    "overall": 94,
+    "details": {
+      "tls_version": 100,
+      "cipher_suite": 100,
+      "key_exchange": 92,
+      "certificate_validation": 65,
+      "certificate_key_strength": 95,
+      "pqc_algorithm": 100,
+      "pqc_implementation": 100,
+      "hybrid_security": 100
+    },
+    "formula": {
+      "overall_method": "Overall = TLS(97) + Certificate(80) + PQC(100) = 97×0.30 + 80×0.25 + 100×0.45 = 94",
+      "tls_method": "TLS = Version(100)×0.40 + Cipher(100)×0.30 + KeyExchange(92)×0.30 = 100×0.40 + 100×0.30 + 92×0.30 = 97",
+      "certificate_method": "Certificate = (Validation(65) + KeyStrength(95)) / 2 = (65 + 95) / 2 = 80",
+      "pqc_method": "PQC = (Algorithm(100) + Implementation(100) + Hybrid(100)) / 3 = (100 + 100 + 100) / 3 = 100",
+      "pqc_weights": "TLS: 30%, Certificate: 25%, PQC: 45%",
+      "classical_weights": "TLS: 50%, Certificate: 50%"
+    },
+    "weights": {
+      "overall_pqc": {
+        "tls_percentage": 30,
+        "certificate_percentage": 25,
+        "pqc_percentage": 45
+      },
+      "overall_classical": {
+        "tls_percentage": 50,
+        "certificate_percentage": 50,
+        "pqc_percentage": 0
+      },
+      "tls_component": {
+        "version_percentage": 40,
+        "cipher_percentage": 30,
+        "key_exchange_percentage": 30
+      },
+      "certificate_component": {
+        "validation_percentage": 50,
+        "key_strength_percentage": 50
+      },
+      "pqc_component": {
+        "algorithm_percentage": 33,
+        "implementation_percentage": 33,
+        "hybrid_percentage": 34
+      }
+    },
+    "pqc_strength": {
+      "algorithms": [
+        {
+          "name": "ML-KEM-768",
+          "security_bits": 192,
+          "nist_level": "Level 2",
+          "score": 95
+        },
+        {
+          "name": "Dilithium2",
+          "security_bits": 128,
+          "nist_level": "Level 1",
+          "score": 90
+        },
+        {
+          "name": "Dilithium3",
+          "security_bits": 192,
+          "nist_level": "Level 2",
+          "score": 95
+        },
+        {
+          "name": "Falcon512",
+          "security_bits": 192,
+          "nist_level": "Level 2",
+          "score": 95
+        },
+        {
+          "name": "Falcon1024",
+          "security_bits": 256,
+          "nist_level": "Level 3",
+          "score": 100
+        }
+      ],
+      "overall_level": "Maximum Security (256+ bits)",
+      "security_bits": 256,
+      "nist_level": "Level 3"
+    }
+  },
+  "security_warnings": [
+    {
+      "level": "critical",
+      "category": "Certificate Validation",
+      "message": "Hostname mismatch detected - certificate subject does not match the target hostname",
+      "recommendation": "Ensure the certificate's Subject Alternative Names (SAN) includes the correct hostname"
+    },
+    {
+      "level": "warning",
+      "category": "Certificate Key Size",
+      "message": "Non-standard RSA key size detected: 4144 bits (expected 2048, 3072, or 4096)",
+      "recommendation": "Consider using standard RSA key sizes (2048, 3072, or 4096 bits) for better compatibility"
+    }
+  ],
+  "performance_warnings": [
+    {
+      "level": "info",
+      "category": "Handshake Performance",
+      "message": "Moderate handshake time: 700ms",
+      "impact": "Handshake time is acceptable but could be optimized",
+      "recommendation": "Monitor handshake performance and consider optimizations if needed"
+    },
+    {
+      "level": "warning",
+      "category": "Certificate Size",
+      "message": "Large certificate detected: 3355 bytes",
+      "impact": "Large certificates increase handshake overhead and may impact performance",
+      "recommendation": "Consider using smaller certificates or reducing the number of SAN entries"
+    }
+  ]
+}

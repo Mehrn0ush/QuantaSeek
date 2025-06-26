@@ -1,0 +1,198 @@
+# RUST_LOG=debug ./target/release/quantaseek pki.goog 
+🔍 QuantaSeek PQC TLS Scanner
+Target: pki.goog
+Profile: CloudflarePqc
+Format: Json
+═══════════════════════════
+Using rustls with PQC support for pki.goog
+DEBUG: hostname='pki.goog', hostname_lower='pki.goog'
+DEBUG: contains cloudflare: false, contains pq: false
+DEBUG: fingerprint_parts: ["mlkem768"]
+DEBUG: hostname='pki.goog', hostname_lower='pki.goog'
+DEBUG: contains cloudflare: false, contains pq: false
+DEBUG: fingerprint_parts: ["mlkem768"]
+{
+  "target": "pki.goog",
+  "tls_version": "1.3",
+  "cipher_suite": "TLS13_AES_256_GCM_SHA384",
+  "key_exchange": [
+    "X25519",
+    "ML-KEM-768"
+  ],
+  "pqc_extensions": {
+    "kem": true,
+    "kem_group": true
+  },
+  "certificate": {
+    "subject": "*.pki.goog",
+    "issuer": "WE2",
+    "public_key_algorithm": "ECDSA",
+    "signature_algorithm": "ECDSA-SHA256",
+    "key_size": 256,
+    "valid_from": "Mon, 02 Jun 2025 08:38:48 +0000",
+    "valid_to": "Mon, 25 Aug 2025 08:38:47 +0000",
+    "san": "*.pki.goog, pki.goog",
+    "certificate_length_estimate": 922,
+    "algorithm_consistency": true
+  },
+  "tls_features": {
+    "alpn": [],
+    "early_data_status": "not_offered",
+    "session_ticket": false,
+    "ocsp_stapling": false
+  },
+  "certificate_visible": true,
+  "handshake_complete": true,
+  "pqc_detected": true,
+  "fallback": {
+    "attempted": false,
+    "succeeded": false,
+    "fallback_penalty_ms": null,
+    "attempts_count": 0,
+    "attempted_profiles": []
+  },
+  "analysis": {
+    "tls_version": "TLS 1.3",
+    "cipher_suite": "TLS13_AES_256_GCM_SHA384",
+    "key_exchange": "ML-KEM-768",
+    "pqc_detected": true,
+    "pqc_key_exchange": [
+      "ML-KEM-768"
+    ],
+    "pqc_signature_algorithms": [
+      "Dilithium2",
+      "Dilithium3",
+      "Falcon512",
+      "Falcon1024"
+    ],
+    "pqc_signature_status": "Unknown (encrypted in TLS 1.3)",
+    "pqc_public_key_algorithms": [],
+    "pqc_extensions": [
+      "KEM",
+      "KEM_GROUP"
+    ],
+    "security_features": [
+      "TLS 1.3",
+      "X25519"
+    ],
+    "security_level": "Hybrid PQC",
+    "hybrid_detected": true,
+    "classical_fallback_available": true,
+    "pqc_signature_used": false,
+    "pqc_signature_algorithm": null,
+    "signature_negotiation_status": "unknown",
+    "server_endpoint_fingerprint": "mlkem768"
+  },
+  "handshake_duration_ms": 506,
+  "client_profile_used": "CloudflarePqc",
+  "total_scan_duration_ms": 709,
+  "adaptive_fingerprinting": false,
+  "server_fingerprint": null,
+  "extension_map": {
+    "key_share": true,
+    "supported_versions": true,
+    "signature_algorithms": true,
+    "alpn_protocols": [],
+    "ocsp_stapling": false,
+    "session_ticket": false,
+    "psk_key_exchange_modes": false,
+    "early_data": false,
+    "pre_shared_key": false
+  },
+  "security_score": {
+    "tls": 97,
+    "certificate": 95,
+    "pqc": 100,
+    "overall": 97,
+    "details": {
+      "tls_version": 100,
+      "cipher_suite": 100,
+      "key_exchange": 92,
+      "certificate_validation": 100,
+      "certificate_key_strength": 90,
+      "pqc_algorithm": 100,
+      "pqc_implementation": 100,
+      "hybrid_security": 100
+    },
+    "formula": {
+      "overall_method": "Overall = TLS(97) + Certificate(95) + PQC(100) = 97×0.30 + 95×0.25 + 100×0.45 = 97",
+      "tls_method": "TLS = Version(100)×0.40 + Cipher(100)×0.30 + KeyExchange(92)×0.30 = 100×0.40 + 100×0.30 + 92×0.30 = 97",
+      "certificate_method": "Certificate = (Validation(100) + KeyStrength(90)) / 2 = (100 + 90) / 2 = 95",
+      "pqc_method": "PQC = (Algorithm(100) + Implementation(100) + Hybrid(100)) / 3 = (100 + 100 + 100) / 3 = 100",
+      "pqc_weights": "TLS: 30%, Certificate: 25%, PQC: 45%",
+      "classical_weights": "TLS: 50%, Certificate: 50%"
+    },
+    "weights": {
+      "overall_pqc": {
+        "tls_percentage": 30,
+        "certificate_percentage": 25,
+        "pqc_percentage": 45
+      },
+      "overall_classical": {
+        "tls_percentage": 50,
+        "certificate_percentage": 50,
+        "pqc_percentage": 0
+      },
+      "tls_component": {
+        "version_percentage": 40,
+        "cipher_percentage": 30,
+        "key_exchange_percentage": 30
+      },
+      "certificate_component": {
+        "validation_percentage": 50,
+        "key_strength_percentage": 50
+      },
+      "pqc_component": {
+        "algorithm_percentage": 33,
+        "implementation_percentage": 33,
+        "hybrid_percentage": 34
+      }
+    },
+    "pqc_strength": {
+      "algorithms": [
+        {
+          "name": "ML-KEM-768",
+          "security_bits": 192,
+          "nist_level": "Level 2",
+          "score": 95
+        },
+        {
+          "name": "Dilithium2",
+          "security_bits": 128,
+          "nist_level": "Level 1",
+          "score": 90
+        },
+        {
+          "name": "Dilithium3",
+          "security_bits": 192,
+          "nist_level": "Level 2",
+          "score": 95
+        },
+        {
+          "name": "Falcon512",
+          "security_bits": 192,
+          "nist_level": "Level 2",
+          "score": 95
+        },
+        {
+          "name": "Falcon1024",
+          "security_bits": 256,
+          "nist_level": "Level 3",
+          "score": 100
+        }
+      ],
+      "overall_level": "Maximum Security (256+ bits)",
+      "security_bits": 256,
+      "nist_level": "Level 3"
+    }
+  },
+  "performance_warnings": [
+    {
+      "level": "info",
+      "category": "Handshake Performance",
+      "message": "Moderate handshake time: 506ms",
+      "impact": "Handshake time is acceptable but could be optimized",
+      "recommendation": "Monitor handshake performance and consider optimizations if needed"
+    }
+  ]
+}
