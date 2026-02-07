@@ -1,0 +1,10 @@
+# Build
+/target
+
+
+# Local / debug
+test_debug
+debug_test.rs
+*.rs.bk
+.DS_Store
+*.zsh
