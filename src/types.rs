@@ -1,4 +1,40 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+
+/// Handshake configuration for timeout and retry settings
+#[derive(Debug, Clone, Copy)]
+pub struct HandshakeConfig {
+    /// Connection timeout in milliseconds
+    pub timeout_ms: u64,
+    /// Number of retry attempts for fallback
+    pub retry_attempts: u32,
+    /// Retry backoff multiplier (exponential backoff: delay = base_ms * (multiplier ^ attempt))
+    pub retry_backoff_multiplier: u32,
+    /// Base retry delay in milliseconds
+    pub retry_base_delay_ms: u64,
+    /// Enable performance optimizations
+    pub enable_optimizations: bool,
+    /// Enable TLS 1.2 fallback for certificate analysis
+    pub tls12_fallback_enabled: bool,
+    /// Always attempt TLS 1.2 fallback (not based on hostname)
+    pub always_attempt_tls12_fallback: bool,
+    /// Always query CT logs (not based on hostname)
+    pub always_query_ct_logs: bool,
+}
+
+impl Default for HandshakeConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 5000,
+            retry_attempts: 3,
+            retry_backoff_multiplier: 2,
+            retry_base_delay_ms: 100,
+            enable_optimizations: true,
+            tls12_fallback_enabled: false,
+            always_attempt_tls12_fallback: false,
+            always_query_ct_logs: false,
+        }
+    }
+}
 
 /// TLS Handshake Profile for different server configurations
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -11,6 +47,25 @@ pub enum HandshakeProfile {
     HybridPqc,
     /// PQC-only configuration (experimental)
     PqcOnly,
+}
+
+impl std::str::FromStr for HandshakeProfile {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "maxpqc" | "max-pqc" | "pqc-only" | "pqconly" | "pqc" => Ok(HandshakeProfile::PqcOnly),
+            "hybrid" | "hybridpqc" | "hybrid-pqc" => Ok(HandshakeProfile::HybridPqc),
+            "standard" | "classic" => Ok(HandshakeProfile::Standard),
+            "cloudflare" | "cloudflarepqc" | "cloudflare-pqc" | "fallback" => {
+                Ok(HandshakeProfile::CloudflarePqc)
+            }
+            other => Err(format!(
+                "Unknown profile: {}. Valid values: standard, cloudflare-pqc, hybrid-pqc, pqc-only",
+                other
+            )),
+        }
+    }
 }
 
 /// Client Profile for different scanning strategies
@@ -36,9 +91,29 @@ impl ClientProfile {
             ClientProfile::MaxPqc => HandshakeProfile::PqcOnly,
         }
     }
-    
+
     /// Get display name for the profile
     pub fn display_name(&self) -> &'static str {
+        match self {
+            ClientProfile::Classic => "Classic",
+            ClientProfile::Hybrid => "Hybrid",
+            ClientProfile::Fallback => "Fallback",
+            ClientProfile::MaxPqc => "MaxPQC",
+        }
+    }
+
+    /// Get CLI argument name for the profile
+    pub fn cli_name(&self) -> &'static str {
+        match self {
+            ClientProfile::Classic => "classic",
+            ClientProfile::Hybrid => "hybrid",
+            ClientProfile::Fallback => "fallback",
+            ClientProfile::MaxPqc => "max-pqc",
+        }
+    }
+
+    /// Get consistent display name (matches CLI arguments)
+    pub fn consistent_display_name(&self) -> &'static str {
         match self {
             ClientProfile::Classic => "Classic",
             ClientProfile::Hybrid => "Hybrid",
@@ -49,20 +124,15 @@ impl ClientProfile {
 }
 
 /// Early Data (0-RTT) support status
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub enum EarlyDataStatus {
     #[serde(rename = "not_offered")]
+    #[default]
     NotOffered,
     #[serde(rename = "accepted")]
     Accepted,
     #[serde(rename = "rejected")]
     Rejected,
-}
-
-impl Default for EarlyDataStatus {
-    fn default() -> Self {
-        Self::NotOffered
-    }
 }
 
 /// TLS Features detected during handshake
@@ -87,8 +157,16 @@ pub struct PqcExtensions {
 pub struct CertificateInfo {
     pub subject: String,
     pub issuer: String,
+    /// Public key algorithm of this certificate (e.g., "ECDSA", "RSA")
     pub public_key_algorithm: String,
+    /// Signature algorithm used by the ISSUER to sign this certificate (e.g., "RSA-SHA256")
+    /// Note: This is the issuer's signature algorithm, not the certificate's own key algorithm.
+    /// It is normal for an ECDSA public key to be signed with RSA (or vice versa).
     pub signature_algorithm: String,
+    /// OID of the signature algorithm (e.g., "1.2.840.113549.1.1.11" for RSA-SHA256)
+    /// This is used for PQC detection via constants::is_pqc_oid()
+    /// FIXED: Always serialize OID - remove skip_serializing_if to ensure field is always present in JSON
+    pub signature_algorithm_oid: Option<String>,
     pub key_size: Option<u32>,
     pub valid_from: String,
     pub valid_to: String,
@@ -96,7 +174,9 @@ pub struct CertificateInfo {
     pub san: Option<String>,
     /// Estimated certificate length in bytes (DER format)
     pub certificate_length_estimate: Option<u32>,
-    /// Whether public key and signature algorithms are consistent
+    /// Whether the certificate's public key algorithm and issuer's signature algorithm
+    /// form a valid combination. Returns true for normal combinations (e.g., ECDSA key
+    /// with RSA signature is valid and common in practice).
     pub algorithm_consistency: bool,
 }
 
@@ -115,14 +195,22 @@ pub struct HandshakeResult {
     pub certificate_visible: bool,
     pub handshake_complete: bool,
     pub pqc_signature_algorithms: Vec<String>,
+    /// PQC signature usage status. None when status is Unknown (TLS 1.3 encrypted), Some(true/false) when known
+    pub pqc_signature_used: Option<bool>,
     pub tls_features: TlsFeatures,
     pub handshake_duration_ms: Option<u64>,
     pub client_profile_used: HandshakeProfile,
     pub extension_map: ExtensionMap,
+    /// Connection type: "tls" for TCP/TLS, "quic" for QUIC. Enables filtering in reports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_type: Option<String>,
+    /// Reason when cipher_suite is "unknown", e.g. "no_server_hello_available" for QUIC without fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cipher_suite_reason: Option<String>,
 }
 
 /// PQC Analysis results
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct PqcAnalysis {
     pub tls_version: String,
     pub cipher_suite: String,
@@ -138,29 +226,29 @@ pub struct PqcAnalysis {
     pub security_level: String,
     pub hybrid_detected: bool,
     pub classical_fallback_available: bool,
-    pub pqc_signature_used: bool,
+    /// PQC signature usage status. None when status is Unknown (TLS 1.3 encrypted), Some(true/false) when known
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pqc_signature_used: Option<bool>,
     pub pqc_signature_algorithm: Option<String>,
     pub signature_negotiation_status: SignatureNegotiationStatus,
     pub server_endpoint_fingerprint: Option<String>,
+    /// Detailed KEM negotiation information
+    pub kem_negotiation: Option<KemNegotiation>,
+    /// PQC extension usage details
+    pub extension_usage: Option<ExtensionUsage>,
+    /// Hybrid combination analysis
+    pub hybrid_details: Option<HybridDetails>,
 }
 
 /// Signature negotiation status
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub enum SignatureNegotiationStatus {
-    #[serde(rename = "negotiated")]
     Negotiated,
-    #[serde(rename = "not_offered")]
     NotOffered,
-    #[serde(rename = "rejected")]
     Rejected,
-    #[serde(rename = "unknown")]
+    #[default]
     Unknown,
-}
-
-impl Default for SignatureNegotiationStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
+    NotApplicable,
 }
 
 /// Output format options
@@ -170,19 +258,55 @@ pub enum OutputFormat {
     Json,
     #[serde(rename = "text")]
     Text,
+    #[serde(rename = "csv")]
+    Csv,
 }
 
 /// Fallback testing information
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FallbackInfo {
-    pub attempted: bool,
-    pub succeeded: bool,
+    /// Whether profile fallback is enabled (fallback chain is available)
+    pub enabled: bool,
+    /// Whether profile fallback was actually used (switched to a different profile)
+    pub used: bool,
     /// Time penalty for fallback attempts (in milliseconds)
     pub fallback_penalty_ms: Option<u64>,
-    /// Number of fallback attempts made
+    /// Number of profile fallback attempts made (excluding the initial attempt)
+    /// If 0, no fallback occurred; if > 0, that many fallback attempts were made
     pub attempts_count: u32,
-    /// List of profiles attempted in order
+    /// List of profiles attempted in order (only populated if fallback was used)
     pub attempted_profiles: Vec<String>,
+    /// TLS 1.2 fallback information (separate from profile fallback)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls12_fallback: Option<Tls12FallbackInfo>,
+}
+
+/// TLS 1.2 fallback information (separate from profile fallback)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Tls12FallbackInfo {
+    /// Whether TLS 1.2 fallback is enabled
+    pub enabled: bool,
+    /// Whether TLS 1.2 was actually used (tls_version == "1.2")
+    pub used: bool,
+    /// Whether TLS 1.2 fallback was attempted for certificate extraction
+    pub attempted_for_certificate: bool,
+}
+
+/// HTTP redirect information
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HttpRedirectInfo {
+    /// Whether HTTP redirect was detected
+    pub detected: bool,
+    /// Redirect status code (307, 308, 301, 302, etc.)
+    pub status_code: Option<u16>,
+    /// Redirect chain (initial URL → final URL)
+    pub redirect_chain: Vec<String>,
+    /// Final destination URL after all redirects
+    pub final_destination: Option<String>,
+    /// Certificate from final destination (if different from initial)
+    pub final_destination_certificate: Option<CertificateInfo>,
+    /// Number of redirects followed
+    pub redirect_count: u32,
 }
 
 /// Warning level for security issues
@@ -240,6 +364,9 @@ pub struct ScanResult {
     pub handshake_complete: bool,
     pub pqc_detected: bool,
     pub fallback: FallbackInfo,
+    /// HTTP redirect information (if redirects were detected)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_redirect: Option<HttpRedirectInfo>,
     pub analysis: PqcAnalysis,
     pub handshake_duration_ms: Option<u64>,
     pub client_profile_used: String,
@@ -259,14 +386,23 @@ pub struct ScanResult {
     /// Performance warnings and recommendations
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub performance_warnings: Vec<PerformanceWarning>,
+    /// Raw ServerHello message bytes for PQC detection
+    pub raw_server_hello: Vec<u8>,
+    /// Connection type: "tls" or "quic". Present when set from handshake for filtering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_type: Option<String>,
+    /// Reason for cipher_suite "unknown", e.g. "no_server_hello_available".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cipher_suite_reason: Option<String>,
 }
 
 /// Extension negotiation status
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub enum ExtensionStatus {
     #[serde(rename = "present")]
     Present,
     #[serde(rename = "not_present")]
+    #[default]
     NotPresent,
     #[serde(rename = "encrypted")]
     Encrypted,
@@ -276,12 +412,6 @@ pub enum ExtensionStatus {
     Negotiated(String), // Contains the negotiated value
     #[serde(rename = "not_applicable")]
     NotApplicable, // Extension doesn't exist in this TLS version
-}
-
-impl Default for ExtensionStatus {
-    fn default() -> Self {
-        Self::NotPresent
-    }
 }
 
 /// Extension negotiation mapping
@@ -300,7 +430,10 @@ pub struct ExtensionMap {
 }
 
 impl ExtensionMap {
-    pub fn update_from_client_hello(&mut self, _offered_extensions: &std::collections::HashSet<u16>) {
+    pub fn update_from_client_hello(
+        &mut self,
+        _offered_extensions: &std::collections::HashSet<u16>,
+    ) {
         // This method is called to track which extensions were offered in ClientHello
         // For now, we don't need to do anything with this information
         // as we're using the real negotiated extensions from the handshake
@@ -308,24 +441,27 @@ impl ExtensionMap {
 }
 
 /// Security scoring for quantitative assessment
-/// 
+///
 /// Scoring Formula:
 /// - Overall = TLS(30%) + Certificate(25%) + PQC(45%) for PQC-enabled connections
 /// - Overall = TLS(50%) + Certificate(50%) for classical connections
-/// 
+///
 /// TLS Component = Version(40%) + Cipher(30%) + KeyExchange(30%)
 /// Certificate Component = (Validation + KeyStrength) / 2
 /// PQC Component = (Algorithm + Implementation + Hybrid) / 3
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SecurityScore {
     /// TLS protocol security score (0-100)
     pub tls: u8,
-    /// Certificate security score (0-100)
+    /// Certificate security score (0-100). Treat as "no data" when certificate_visible is false (suggestion 8.3).
     pub certificate: u8,
     /// PQC implementation score (0-100)
     pub pqc: u8,
     /// Overall security score (0-100)
     pub overall: u8,
+    /// When certificate_visible is false, overall excluding certificate (TLS + PQC only) for comparable metrics (suggestion 8.3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overall_without_certificate: Option<u8>,
     /// Detailed scoring breakdown
     pub details: SecurityScoreDetails,
     /// Scoring formula explanation
@@ -337,7 +473,7 @@ pub struct SecurityScore {
 }
 
 /// Explanation of how scores are calculated
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ScoringFormula {
     /// Overall score calculation method
     pub overall_method: String,
@@ -354,7 +490,7 @@ pub struct ScoringFormula {
 }
 
 /// Detailed security scoring breakdown
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SecurityScoreDetails {
     /// TLS version score (TLS 1.3 = 100, TLS 1.2 = 60, TLS 1.1 = 20, TLS 1.0 = 0)
     pub tls_version: u8,
@@ -375,7 +511,7 @@ pub struct SecurityScoreDetails {
 }
 
 /// Explicit weights used in security scoring
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ScoringWeights {
     /// Overall score weights for PQC-enabled connections
     pub overall_pqc: OverallWeights,
@@ -390,7 +526,7 @@ pub struct ScoringWeights {
 }
 
 /// Overall scoring weights
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct OverallWeights {
     pub tls_percentage: u8,
     pub certificate_percentage: u8,
@@ -398,7 +534,7 @@ pub struct OverallWeights {
 }
 
 /// TLS component weights
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct TlsWeights {
     pub version_percentage: u8,
     pub cipher_percentage: u8,
@@ -406,14 +542,14 @@ pub struct TlsWeights {
 }
 
 /// Certificate component weights
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CertificateWeights {
     pub validation_percentage: u8,
     pub key_strength_percentage: u8,
 }
 
 /// PQC component weights
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PqcWeights {
     pub algorithm_percentage: u8,
     pub implementation_percentage: u8,
@@ -421,7 +557,7 @@ pub struct PqcWeights {
 }
 
 /// PQC algorithm security strength information
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PqcStrengthInfo {
     /// Detected PQC algorithms with their security levels
     pub algorithms: Vec<PqcAlgorithmInfo>,
@@ -442,107 +578,142 @@ pub struct PqcAlgorithmInfo {
     pub score: u8,
 }
 
-impl Default for SecurityScore {
-    fn default() -> Self {
-        Self {
-            tls: 0,
-            certificate: 0,
-            pqc: 0,
-            overall: 0,
-            details: SecurityScoreDetails::default(),
-            formula: ScoringFormula::default(),
-            weights: ScoringWeights::default(),
-            pqc_strength: PqcStrengthInfo::default(),
-        }
-    }
+/// Detailed KEM negotiation information
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct KemNegotiation {
+    /// KEMs offered by the client in order of preference
+    pub client_offered: Vec<KemCandidate>,
+    /// KEM selected by the server
+    pub server_selected: Option<KemCandidate>,
+    /// Negotiation order and priority
+    pub negotiation_order: Vec<String>,
+    /// Whether the server's selection matches client's preference
+    pub preference_matched: bool,
+    /// Number of KEM candidates offered
+    pub total_candidates: u32,
 }
 
-impl Default for SecurityScoreDetails {
-    fn default() -> Self {
-        Self {
-            tls_version: 0,
-            cipher_suite: 0,
-            key_exchange: 0,
-            certificate_validation: 0,
-            certificate_key_strength: 0,
-            pqc_algorithm: 0,
-            pqc_implementation: 0,
-            hybrid_security: 0,
-        }
-    }
+/// Individual KEM candidate information
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct KemCandidate {
+    pub name: String,
+    pub security_bits: u32,
+    pub nist_level: String,
+    pub priority: u32, // Lower number = higher priority
+    pub status: KemStatus,
 }
 
-impl Default for ScoringFormula {
-    fn default() -> Self {
-        Self {
-            overall_method: String::new(),
-            tls_method: String::new(),
-            certificate_method: String::new(),
-            pqc_method: String::new(),
-            pqc_weights: String::new(),
-            classical_weights: String::new(),
-        }
-    }
+/// KEM negotiation status
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum KemStatus {
+    #[serde(rename = "offered")]
+    Offered,
+    #[serde(rename = "selected")]
+    Selected,
+    #[serde(rename = "rejected")]
+    Rejected,
+    #[serde(rename = "fallback")]
+    Fallback,
 }
 
-impl Default for ScoringWeights {
-    fn default() -> Self {
-        Self {
-            overall_pqc: OverallWeights::default(),
-            overall_classical: OverallWeights::default(),
-            tls_component: TlsWeights::default(),
-            certificate_component: CertificateWeights::default(),
-            pqc_component: PqcWeights::default(),
-        }
-    }
+/// PQC extension usage details
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ExtensionUsage {
+    /// Extensions offered by the client
+    pub client_offered: Vec<ExtensionInfo>,
+    /// Extensions actually used in the handshake
+    pub server_used: Vec<ExtensionInfo>,
+    /// Extensions that were rejected or ignored
+    pub rejected: Vec<ExtensionInfo>,
+    /// Total number of PQC-related extensions
+    pub total_pqc_extensions: u32,
+    /// Whether all offered PQC extensions were accepted
+    pub full_pqc_support: bool,
 }
 
-impl Default for OverallWeights {
-    fn default() -> Self {
-        Self {
-            tls_percentage: 0,
-            certificate_percentage: 0,
-            pqc_percentage: 0,
-        }
-    }
+/// Individual extension information
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ExtensionInfo {
+    pub name: String,
+    pub extension_type: u16,
+    pub status: ExtensionStatus,
+    pub data_length: Option<u32>,
+    pub pqc_related: bool,
 }
 
-impl Default for TlsWeights {
-    fn default() -> Self {
-        Self {
-            version_percentage: 0,
-            cipher_percentage: 0,
-            key_exchange_percentage: 0,
-        }
-    }
+/// Hybrid combination analysis
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HybridDetails {
+    /// Classical and PQC algorithms in the hybrid
+    pub combination: Vec<HybridComponent>,
+    /// Combined security strength calculation
+    pub combined_security: CombinedSecurity,
+    /// Fallback path analysis
+    pub fallback_analysis: Option<FallbackAnalysis>,
+    /// Hybrid efficiency metrics
+    pub efficiency: HybridEfficiency,
 }
 
-impl Default for CertificateWeights {
-    fn default() -> Self {
-        Self {
-            validation_percentage: 0,
-            key_strength_percentage: 0,
-        }
-    }
+/// Individual component in hybrid combination
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HybridComponent {
+    pub name: String,
+    pub algorithm_type: AlgorithmType,
+    pub security_bits: u32,
+    pub nist_level: String,
+    pub weight: f32, // Contribution to overall security
 }
 
-impl Default for PqcWeights {
-    fn default() -> Self {
-        Self {
-            algorithm_percentage: 0,
-            implementation_percentage: 0,
-            hybrid_percentage: 0,
-        }
-    }
+/// Algorithm type classification
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum AlgorithmType {
+    #[serde(rename = "classical")]
+    Classical,
+    #[serde(rename = "pqc")]
+    Pqc,
+    #[serde(rename = "hybrid")]
+    Hybrid,
 }
 
-impl Default for PqcStrengthInfo {
-    fn default() -> Self {
-        Self {
-            algorithms: Vec::new(),
-            overall_level: String::new(),
-            security_bits: 0,
-            nist_level: String::new(),
-        }
-    }
-} 
+/// Combined security strength calculation
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CombinedSecurity {
+    /// Effective security bits of the hybrid combination
+    pub effective_bits: u32,
+    /// NIST security level of the combination
+    pub nist_level: String,
+    /// Security score (0-100)
+    pub score: u8,
+    /// Calculation method used
+    pub calculation_method: String,
+    /// Whether the combination provides quantum resistance
+    pub quantum_resistant: bool,
+}
+
+/// Fallback path analysis
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FallbackAnalysis {
+    /// Classical algorithms used in fallback
+    pub classical_algorithms: Vec<String>,
+    /// Security strength of fallback path
+    pub fallback_security_bits: u32,
+    /// Time penalty for fallback (ms)
+    pub time_penalty_ms: Option<u64>,
+    /// Whether fallback was successful
+    pub successful: bool,
+    /// Fallback trigger reason
+    pub trigger_reason: Option<String>,
+}
+
+/// Hybrid efficiency metrics
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HybridEfficiency {
+    /// Handshake overhead compared to classical-only
+    pub handshake_overhead_ms: Option<i64>,
+    /// Bandwidth overhead (bytes)
+    pub bandwidth_overhead_bytes: Option<u32>,
+    /// CPU usage increase percentage
+    pub cpu_overhead_percent: Option<f32>,
+    /// Memory usage increase (bytes)
+    pub memory_overhead_bytes: Option<u32>,
+}
