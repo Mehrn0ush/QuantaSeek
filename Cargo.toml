@@ -1,6 +1,7 @@
 [package]
 name = "QuantaSeek"
 version = "0.1.0"
+authors = ["Mehrnoush <Mehrnoush.vaseghi@gmail.com>"]
 edition = "2021"
 
 [[bin]]
