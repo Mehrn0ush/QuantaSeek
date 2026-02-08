@@ -1,5 +1,5 @@
 //! TLS PQC Constants and References
-//! 
+//!
 //! This module contains all PQC-related constants used in the TLS scanner,
 //! along with their IETF draft references and current status.
 
@@ -33,8 +33,9 @@ pub const EXT_KEY_SHARE: u16 = 0x0033;
 
 /// PQC Extensions (Experimental/Draft)
 /// Note: These are hypothetical extensions for future PQC support
-pub const EXT_PQC_KEM: u16 = 0xfe33; // Hypothetical PQC KEM extension
-pub const EXT_PQC_KEM_GROUP: u16 = 0xfe34; // Hypothetical PQC KEM group extension
+/// FIXED: Updated to match actual draft codepoints used in handshake (0xFE50/0xFE51)
+pub const EXT_PQC_KEM: u16 = 0xfe50; // Hypothetical PQC KEM extension (draft)
+pub const EXT_PQC_KEM_GROUP: u16 = 0xfe51; // Hypothetical PQC KEM group extension (draft)
 
 // ============================================================================
 // NAMED GROUPS (Key Exchange)
@@ -44,19 +45,28 @@ pub const EXT_PQC_KEM_GROUP: u16 = 0xfe34; // Hypothetical PQC KEM group extensi
 pub const NAMED_GROUP_X25519: u16 = 0x001d;
 pub const NAMED_GROUP_SECP256R1: u16 = 0x0017;
 
-/// PQC Named Groups (draft-ietf-tls-hybrid-design-04)
-/// 
-/// Hybrid groups combine classical and post-quantum algorithms:
-/// - X25519 provides classical security
-/// - PQC algorithms provide post-quantum security
-pub const NAMED_GROUP_X25519_KYBER512: u16 = 0xfe30; // X25519Kyber512Draft00 (obsolete)
-pub const NAMED_GROUP_X25519_KYBER768: u16 = 0x6399; // X25519Kyber768Draft00 
-pub const NAMED_GROUP_X25519_MLKEM768: u16 = 0x11ec; // X25519MLKEM768 (recommended)
-pub const NAMED_GROUP_P256_KYBER768: u16 = 0x639a; // P256Kyber768Draft00
+/// PQC Named Groups (IANA TLS Supported Groups Registry)
+/// FIXED: Updated to match IANA registry codepoints
+///
+/// ML-KEM (formerly Kyber) - NIST PQC Standardization Winners
+/// Reference: https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-8
+pub const NAMED_GROUP_MLKEM512: u16 = 512; // ML-KEM-512 (NIST Level 1)
+pub const NAMED_GROUP_MLKEM768: u16 = 513; // ML-KEM-768 (NIST Level 3)
+pub const NAMED_GROUP_MLKEM1024: u16 = 514; // ML-KEM-1024 (NIST Level 5)
 
-/// Pure PQC Groups (draft-ietf-tls-hybrid-design-04)
-pub const NAMED_GROUP_KYBER768: u16 = 0x001c; // Kyber768 (pure PQC)
-pub const NAMED_GROUP_KYBER1024: u16 = 0xfe31; // Kyber1024 (pure PQC)
+/// Hybrid Groups (IANA TLS Supported Groups Registry)
+/// Combine classical and post-quantum algorithms for hybrid security
+pub const NAMED_GROUP_X25519_MLKEM512: u16 = 4587; // X25519MLKEM512Draft00
+pub const NAMED_GROUP_X25519_MLKEM768: u16 = 4588; // X25519MLKEM768Draft00 (recommended)
+pub const NAMED_GROUP_X25519_MLKEM1024: u16 = 4589; // X25519MLKEM1024Draft00
+pub const NAMED_GROUP_P256_MLKEM512: u16 = 4590; // P256MLKEM512Draft00
+pub const NAMED_GROUP_P256_MLKEM768: u16 = 4591; // P256MLKEM768Draft00
+pub const NAMED_GROUP_P256_MLKEM1024: u16 = 4592; // P256MLKEM1024Draft00
+
+/// Legacy Kyber Groups (obsolete, but may still be in use)
+/// These are the old draft codepoints before ML-KEM standardization
+pub const NAMED_GROUP_X25519_KYBER768_DRAFT00: u16 = 25497; // X25519Kyber768Draft00 (obsolete)
+pub const NAMED_GROUP_X25519_KYBER512_DRAFT00: u16 = 25498; // X25519Kyber512Draft00 (obsolete)
 
 // ============================================================================
 // SIGNATURE ALGORITHMS
@@ -68,12 +78,12 @@ pub const SIG_ECDSA_SECP256R1_SHA256: u16 = 0x0403;
 pub const SIG_RSA_PSS_SHA256: u16 = 0x0804;
 
 /// PQC Signature Algorithms (draft-ietf-tls-pq-sig-00)
-/// 
+///
 /// These are based on the NIST PQC standardization process:
 /// - Dilithium2: Level 2 security (recommended for most use cases)
 /// - Dilithium3: Level 3 security (higher security, larger keys)
 /// - Dilithium5: Level 5 security (highest security, largest keys)
-/// 
+///
 /// Note: These are draft codepoints and may change in final RFC
 pub const SIG_DILITHIUM2: u16 = 0x0b01; // Dilithium2 (Level 2)
 pub const SIG_DILITHIUM3: u16 = 0x0b02; // Dilithium3 (Level 3)
@@ -102,7 +112,7 @@ pub const TLS_AES_256_GCM_SHA384: u16 = 0x1302;
 pub const TLS_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
 
 /// PQC Hybrid Cipher Suites (draft-ietf-tls-hybrid-design-04)
-/// 
+///
 /// These combine classical AEAD with hybrid key exchange:
 /// - Classical part: AES-GCM or ChaCha20-Poly1305 for data encryption
 /// - Hybrid part: X25519 + PQC for key exchange
@@ -158,42 +168,54 @@ pub const DILITHIUM5_PUBLIC_KEY_SIZE: usize = 2592;
 // ============================================================================
 
 /// Check if a named group is PQC-related
+/// FIXED: Updated to use IANA-registered codepoints
 pub fn is_pqc_group(group: u16) -> bool {
-    matches!(group,
-        NAMED_GROUP_X25519_KYBER512 |
-        NAMED_GROUP_X25519_KYBER768 |
+    matches!(
+        group,
+        // ML-KEM groups (IANA: 512-514)
+        NAMED_GROUP_MLKEM512 |
+        NAMED_GROUP_MLKEM768 |
+        NAMED_GROUP_MLKEM1024 |
+        // Hybrid groups (IANA: 4587-4592)
+        NAMED_GROUP_X25519_MLKEM512 |
         NAMED_GROUP_X25519_MLKEM768 |
-        NAMED_GROUP_P256_KYBER768 |
-        NAMED_GROUP_KYBER768 |
-        NAMED_GROUP_KYBER1024
+        NAMED_GROUP_X25519_MLKEM1024 |
+        NAMED_GROUP_P256_MLKEM512 |
+        NAMED_GROUP_P256_MLKEM768 |
+        NAMED_GROUP_P256_MLKEM1024 |
+        // Legacy Kyber groups (IANA: 25497-25498, obsolete)
+        NAMED_GROUP_X25519_KYBER768_DRAFT00 |
+        NAMED_GROUP_X25519_KYBER512_DRAFT00
     )
 }
 
 /// Check if a signature algorithm is PQC-related
 pub fn is_pqc_signature_algorithm(algorithm: u16) -> bool {
-    matches!(algorithm,
-        SIG_DILITHIUM2 |
-        SIG_DILITHIUM3 |
-        SIG_DILITHIUM5 |
-        SIG_DILITHIUM2_DRAFT |
-        SIG_P256_DILITHIUM2 |
-        SIG_RSA3072_DILITHIUM2 |
-        SIG_DILITHIUM3_DRAFT |
-        SIG_P384_DILITHIUM3 |
-        SIG_DILITHIUM5_DRAFT |
-        SIG_P521_DILITHIUM5 |
-        SIG_FALCON512 |
-        SIG_FALCON1024 |
-        SIG_SPHINCS_PLUS
+    matches!(
+        algorithm,
+        SIG_DILITHIUM2
+            | SIG_DILITHIUM3
+            | SIG_DILITHIUM5
+            | SIG_DILITHIUM2_DRAFT
+            | SIG_P256_DILITHIUM2
+            | SIG_RSA3072_DILITHIUM2
+            | SIG_DILITHIUM3_DRAFT
+            | SIG_P384_DILITHIUM3
+            | SIG_DILITHIUM5_DRAFT
+            | SIG_P521_DILITHIUM5
+            | SIG_FALCON512
+            | SIG_FALCON1024
+            | SIG_SPHINCS_PLUS
     )
 }
 
 /// Check if a cipher suite is PQC-related
 pub fn is_pqc_cipher_suite(suite: u16) -> bool {
-    matches!(suite,
-        TLS_HYBRID_X25519_MLKEM768_SHA384 |
-        TLS_HYBRID_ECDHE_KYBER768_X25519_SHA384 |
-        TLS_PQC_HYBRID
+    matches!(
+        suite,
+        TLS_HYBRID_X25519_MLKEM768_SHA384
+            | TLS_HYBRID_ECDHE_KYBER768_X25519_SHA384
+            | TLS_PQC_HYBRID
     )
 }
 
@@ -202,12 +224,20 @@ pub fn get_group_name(group: u16) -> String {
     match group {
         NAMED_GROUP_X25519 => "x25519".to_string(),
         NAMED_GROUP_SECP256R1 => "secp256r1".to_string(),
-        NAMED_GROUP_X25519_KYBER512 => "X25519+Kyber512Draft00".to_string(),
-        NAMED_GROUP_X25519_KYBER768 => "X25519+Kyber768Draft00".to_string(),
-        NAMED_GROUP_X25519_MLKEM768 => "X25519+ML-KEM768".to_string(),
-        NAMED_GROUP_P256_KYBER768 => "P256+Kyber768Draft00".to_string(),
-        NAMED_GROUP_KYBER768 => "Kyber768".to_string(),
-        NAMED_GROUP_KYBER1024 => "Kyber1024".to_string(),
+        // ML-KEM groups (IANA: 512-514)
+        NAMED_GROUP_MLKEM512 => "ML-KEM-512".to_string(),
+        NAMED_GROUP_MLKEM768 => "ML-KEM-768".to_string(),
+        NAMED_GROUP_MLKEM1024 => "ML-KEM-1024".to_string(),
+        // Hybrid groups (IANA: 4587-4592)
+        NAMED_GROUP_X25519_MLKEM512 => "X25519+ML-KEM-512".to_string(),
+        NAMED_GROUP_X25519_MLKEM768 => "X25519+ML-KEM-768".to_string(),
+        NAMED_GROUP_X25519_MLKEM1024 => "X25519+ML-KEM-1024".to_string(),
+        NAMED_GROUP_P256_MLKEM512 => "P256+ML-KEM-512".to_string(),
+        NAMED_GROUP_P256_MLKEM768 => "P256+ML-KEM-768".to_string(),
+        NAMED_GROUP_P256_MLKEM1024 => "P256+ML-KEM-1024".to_string(),
+        // Legacy Kyber groups (IANA: 25497-25498, obsolete)
+        NAMED_GROUP_X25519_KYBER768_DRAFT00 => "X25519+Kyber768Draft00".to_string(),
+        NAMED_GROUP_X25519_KYBER512_DRAFT00 => "X25519+Kyber512Draft00".to_string(),
         _ => format!("unknown(0x{:04x})", group),
     }
 }
@@ -330,4 +360,4 @@ pub const PQC_SIGNATURE_OIDS: &[&str] = &[
 /// Check if a signature OID is PQC-related
 pub fn is_pqc_oid(oid: &str) -> bool {
     PQC_SIGNATURE_OIDS.contains(&oid)
-} 
+}
