@@ -25,8 +25,7 @@ async fn handshake_engine_reports_negotiated_hybrid_group() {
     })
     .await;
 
-    let engine =
-        HandshakeEngine::with_config(HandshakeProfile::CloudflarePqc, config_trusting(&pki));
+    let engine = HandshakeEngine::with_config(HandshakeProfile::Default, config_trusting(&pki));
     let stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
     let result = engine.perform_handshake(stream, "localhost").await.unwrap();
 
@@ -57,13 +56,10 @@ async fn scans_the_port_named_in_the_target() {
     .await;
 
     let target = format!("localhost:{}", server.port());
-    let result = quanta_seek::scan::scan_target(
-        &scan_options(&pki),
-        &target,
-        &quanta_seek::types::ClientProfile::Fallback,
-    )
-    .await
-    .unwrap();
+    let result =
+        quanta_seek::scan::scan_target(&scan_options(&pki), &target, &HandshakeProfile::Default)
+            .await
+            .unwrap();
 
     assert!(result.handshake_complete, "error: {:?}", result.error);
     assert_eq!(result.key_exchange, vec!["X25519MLKEM768".to_string()]);
@@ -126,7 +122,7 @@ async fn sni_override_is_sent_and_validated() {
     })
     .await;
     let target = format!("127.0.0.1:{}", server.port());
-    let profile = quanta_seek::types::ClientProfile::Fallback;
+    let profile = HandshakeProfile::Default;
 
     let opts = quanta_seek::scan::ScanOptions {
         sni: Some("qs.test".into()),
@@ -176,13 +172,10 @@ async fn redirects_are_not_followed_by_default() {
     let pki = TestPki::new("redirect-off");
     let (origin, destination) = redirect_pair(&pki).await;
     let target = format!("127.0.0.1:{}", origin.port());
-    let result = quanta_seek::scan::scan_target(
-        &scan_options(&pki),
-        &target,
-        &quanta_seek::types::ClientProfile::Fallback,
-    )
-    .await
-    .unwrap();
+    let result =
+        quanta_seek::scan::scan_target(&scan_options(&pki), &target, &HandshakeProfile::Default)
+            .await
+            .unwrap();
     assert!(result.handshake_complete, "error: {:?}", result.error);
     assert!(result.http_redirect.is_none());
     assert_eq!(result.certificate.unwrap().subject, "redirect-origin");
@@ -199,13 +192,9 @@ async fn followed_redirect_never_replaces_target_certificate() {
         follow_redirects: true,
         ..scan_options(&pki)
     };
-    let result = quanta_seek::scan::scan_target(
-        &opts,
-        &target,
-        &quanta_seek::types::ClientProfile::Fallback,
-    )
-    .await
-    .unwrap();
+    let result = quanta_seek::scan::scan_target(&opts, &target, &HandshakeProfile::Default)
+        .await
+        .unwrap();
     assert!(result.handshake_complete, "error: {:?}", result.error);
     // The target's own certificate is reported...
     assert_eq!(

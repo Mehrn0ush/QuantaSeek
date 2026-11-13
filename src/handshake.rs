@@ -509,7 +509,10 @@ impl HandshakeEngine {
                 match stream.read(&mut tls_buffer) {
                     Ok(n) => {
                         if n == 0 {
-                            return Err(anyhow::anyhow!("Connection closed during handshake"));
+                            return Err(anyhow::Error::new(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "connection closed during handshake",
+                            )));
                         }
 
                         // Capture raw TLS record before processing
@@ -519,7 +522,8 @@ impl HandshakeEngine {
                         client.read_tls(&mut &tls_buffer[..n])?;
                     }
                     Err(e) => {
-                        return Err(anyhow::anyhow!("Failed to read from stream: {}", e));
+                        // Keep the io::Error as the source so timeouts stay classifiable.
+                        return Err(anyhow::Error::new(e).context("failed to read from stream"));
                     }
                 }
             }
@@ -722,28 +726,25 @@ impl HandshakeEngine {
         ));
 
         // Create a custom config with optimizations
-        let mut config = ClientConfig::builder()
+        // The profile decides which key-exchange groups the ClientHello offers.
+        let provider = rustls::crypto::CryptoProvider {
+            kx_groups: self.profile.kx_groups(),
+            ..default_provider()
+        };
+        let versions: &[&'static rustls::SupportedProtocolVersion] = if self.profile.tls13_only() {
+            &[&rustls::version::TLS13]
+        } else {
+            rustls::DEFAULT_VERSIONS
+        };
+        let mut config = ClientConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(versions)
+            .map_err(|e| anyhow::anyhow!("invalid TLS configuration for profile: {}", e))?
             .with_root_certificates(root_store)
             .with_no_client_auth();
 
-        // FIXED: Install custom verifier to capture TLS 1.3 CertificateVerify signature scheme
+        // Capture the TLS 1.3 CertificateVerify signature scheme.
         config.dangerous().set_certificate_verifier(verifier);
-
-        // Apply performance optimizations if enabled
-        if self.config.enable_optimizations {
-            // Enable session resumption for faster subsequent handshakes
-            config.enable_sni = true;
-
-            // IMPROVED: Enhanced session resumption for better PQC performance
-            // Note: Session resumption is enabled by default in newer rustls versions
-            // The resumption field is already configured in the builder
-
-            // Enable early data for faster handshakes
-            config.enable_early_data = true;
-
-            // Optimize cipher suite preferences for PQC
-            // Note: This would require custom cipher suite configuration
-        }
+        config.enable_sni = true;
 
         Ok((Arc::new(config), captured_scheme))
     }

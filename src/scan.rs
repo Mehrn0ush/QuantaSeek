@@ -8,7 +8,7 @@ use crate::{
     http_redirect::{follow_redirects, RedirectOptions},
     security_scoring::SecurityScorer,
     types::{
-        ClientProfile, ErrorCode, FallbackInfo, HandshakeConfig, PerformanceWarning, ScanError,
+        ErrorCode, FallbackInfo, HandshakeConfig, Inference, PerformanceWarning, ScanError,
         ScanResult, SecurityScore, SecurityWarning, WarningLevel,
     },
     HandshakeEngine, HandshakeProfile,
@@ -81,6 +81,85 @@ impl Target {
     }
 }
 
+/// Turn a handshake error into a classified outcome.
+///
+/// Classification is by error type, not message text: rustls errors say what
+/// the server sent; I/O errors say what happened to the connection.
+pub fn classify_handshake_error(
+    error: &anyhow::Error,
+    profile: &HandshakeProfile,
+    port: u16,
+) -> ScanError {
+    let offered = profile.offered_group_names().join(", ");
+    let details = Some(format!(
+        "port={}, profile={}, offered_groups=[{}]",
+        port,
+        profile.name(),
+        offered
+    ));
+    let message = error.to_string();
+
+    if let Some(tls) = error.downcast_ref::<rustls::Error>() {
+        return match tls {
+            rustls::Error::AlertReceived(alert) => {
+                let mut e = ScanError::from_code_with_message(
+                    ErrorCode::HandshakeRejected,
+                    message,
+                    details,
+                );
+                e.alert = Some(format!("{:?}", alert));
+                if matches!(
+                    alert,
+                    rustls::AlertDescription::HandshakeFailure
+                        | rustls::AlertDescription::InsufficientSecurity
+                        | rustls::AlertDescription::IllegalParameter
+                ) {
+                    e.interpretation = Some(Inference::new(format!(
+                        "The server aborted after our ClientHello offering [{}]. A common \
+                         cause is that it supports none of these key-exchange groups, but \
+                         this alert is also used for other negotiation failures (cipher \
+                         suites, signature algorithms, versions). Per-group probing, which \
+                         would confirm the cause, is not implemented.",
+                        offered
+                    )));
+                }
+                e
+            }
+            rustls::Error::InvalidCertificate(_) => {
+                ScanError::from_code_with_message(ErrorCode::CertificateRejected, message, details)
+            }
+            rustls::Error::PeerIncompatible(_)
+            | rustls::Error::PeerMisbehaved(_)
+            | rustls::Error::InappropriateHandshakeMessage { .. }
+            | rustls::Error::InappropriateMessage { .. }
+            | rustls::Error::InvalidMessage(_) => {
+                ScanError::from_code_with_message(ErrorCode::ProtocolError, message, details)
+            }
+            _ => ScanError::from_code_with_message(ErrorCode::HandshakeFailed, message, details),
+        };
+    }
+
+    if let Some(io) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+    {
+        use std::io::ErrorKind::*;
+        let code = match io.kind() {
+            TimedOut | WouldBlock => ErrorCode::HandshakeTimeout,
+            UnexpectedEof | ConnectionReset | ConnectionAborted | BrokenPipe => {
+                ErrorCode::ConnectionClosed
+            }
+            _ => ErrorCode::HandshakeFailed,
+        };
+        return ScanError::from_code_with_message(code, message, details);
+    }
+
+    if message.contains("Connection closed during handshake") {
+        return ScanError::from_code_with_message(ErrorCode::ConnectionClosed, message, details);
+    }
+    ScanError::from_code_with_message(ErrorCode::HandshakeFailed, message, details)
+}
+
 /// Run-wide scan settings.
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
@@ -108,10 +187,10 @@ impl Default for ScanOptions {
 pub async fn scan_target(
     opts: &ScanOptions,
     target: &str,
-    profile: &ClientProfile,
+    profile: &HandshakeProfile,
 ) -> Result<ScanResult> {
     let mut result = ScanResult::new(target.to_string());
-    result.set_profile(profile.consistent_display_name());
+    result.set_profile(profile.name());
 
     let parsed = Target::parse(target).map_err(|e| anyhow::anyhow!(e))?;
     let host = parsed.host.as_str();
@@ -134,17 +213,14 @@ pub async fn scan_target(
                         result.fallback_success = Some(true);
                     }
                     Err(e) => {
+                        let error = classify_handshake_error(&e, profile, *port);
                         result.security_warnings.push(SecurityWarning {
-                            message: format!("Scan failed: {}", e),
+                            message: format!("Scan failed: {}", error.message),
                             level: WarningLevel::Critical,
                             category: "Handshake".to_string(),
                             recommendation: None,
                         });
-                        result.error = Some(ScanError::from_code_with_message(
-                            ErrorCode::HandshakeFailed,
-                            e.to_string(),
-                            Some(format!("port={}", port)),
-                        ));
+                        result.error = Some(error);
                     }
                 }
                 return Ok(result);
@@ -232,158 +308,35 @@ pub async fn try_connect(
     }
 }
 
-/// IMPROVED: Profile-based fallback strategy implementation
-/// Each profile has a specific fallback chain:
-/// - Fallback: MaxPQC → Hybrid → Classical (TLS 1.2)
-/// - Hybrid: Hybrid → Classical (TLS 1.2)
-/// - Classic: Classical only (TLS 1.2)
-/// - MaxPQC: PQC-only → Hybrid → Classical (TLS 1.2)
+/// One handshake on `host:port` with the profile's ClientHello, then analysis.
+///
+/// The TCP stream from the reachability probe is dropped; the handshake uses
+/// a fresh connection to the same port.
 pub async fn perform_scan_with_stream(
     opts: &ScanOptions,
     _stream: TcpStream,
     target: &str,
     host: &str,
     port: u16,
-    profile: &ClientProfile,
-) -> Result<ScanResult, Box<dyn std::error::Error>> {
+    profile: &HandshakeProfile,
+) -> anyhow::Result<ScanResult> {
     let scan_start = std::time::Instant::now();
     let server_name = opts.sni.as_deref().unwrap_or(host);
-
-    // Define fallback chain for each profile
-    let fallback_chain = match profile {
-        ClientProfile::Fallback => vec![
-            HandshakeProfile::PqcOnly,   // Try MaxPQC first
-            HandshakeProfile::HybridPqc, // Then Hybrid
-            HandshakeProfile::Standard,  // Finally Classical (TLS 1.2)
-        ],
-        ClientProfile::Hybrid => vec![
-            HandshakeProfile::HybridPqc, // Try Hybrid first
-            HandshakeProfile::Standard,  // Then Classical (TLS 1.2)
-        ],
-        ClientProfile::Classic => vec![
-            HandshakeProfile::Standard, // Only Classical (TLS 1.2)
-        ],
-        ClientProfile::MaxPqc => vec![
-            HandshakeProfile::PqcOnly,   // Try PQC-only first
-            HandshakeProfile::HybridPqc, // Then Hybrid
-            HandshakeProfile::Standard,  // Finally Classical (TLS 1.2)
-        ],
-    };
-
-    let mut attempted_profiles = Vec::new();
-    let mut last_error = None;
-    let mut handshake_result = None;
-
-    // FIXED: Try each profile in the fallback chain with proper TLS 1.2 handling
-    for (attempt_idx, fallback_profile) in fallback_chain.iter().enumerate() {
-        attempted_profiles.push(format!("{:?}", fallback_profile));
-
-        // FIXED: For Standard profile, use perform_handshake to capture raw_server_hello
-        // Standard profile = TLS 1.2 only, but we still need raw_server_hello for analysis
-        let handshake_attempt = if *fallback_profile == HandshakeProfile::Standard {
-            // Standard profile = TLS 1.2 only
-            let handshake = HandshakeEngine::with_config(*fallback_profile, opts.handshake.clone());
-
-            // FIXED: Use perform_handshake instead of perform_tcp_tls_handshake to capture raw_server_hello
-            // This ensures raw_server_hello is populated even for Classic profile
-            match try_connect(opts, host, port).await {
-                Ok(stream) => handshake.perform_handshake(stream, server_name).await,
-                Err(e) => {
-                    last_error = Some(e.to_string());
-                    if attempt_idx < fallback_chain.len() - 1 {
-                        continue; // Try next profile
-                    } else {
-                        return Err(format!("Connection failed: {}", e).into());
-                    }
-                }
-            }
-        } else {
-            // For PQC profiles, use normal TLS 1.3 handshake
-            let handshake = HandshakeEngine::with_config(*fallback_profile, opts.handshake.clone());
-
-            // Try to perform handshake with this profile
-            // Always create a new connection for each attempt to avoid ownership issues
-            match try_connect(opts, host, port).await {
-                Ok(new_stream) => handshake.perform_handshake(new_stream, server_name).await,
-                Err(e) => {
-                    last_error = Some(e.to_string());
-                    if attempt_idx < fallback_chain.len() - 1 {
-                        continue; // Try next profile
-                    } else {
-                        return Err(format!(
-                            "Connection failed for all profiles. Last error: {}",
-                            e
-                        )
-                        .into());
-                    }
-                }
-            }
-        };
-
-        match handshake_attempt {
-            Ok(result) => {
-                // Handshake succeeded with this profile
-                handshake_result = Some(result);
-                break; // Success - no need to try next profile
-            }
-            Err(e) => {
-                // Handshake failed - try next profile in chain
-                last_error = Some(e.to_string());
-                if attempt_idx < fallback_chain.len() - 1 {
-                    // There are more profiles to try
-                    continue;
-                } else {
-                    // This was the last profile - all attempts failed
-                    return Err(format!("All handshake attempts failed. Last error: {}", e).into());
-                }
-            }
-        }
-    }
-
-    // If we get here, handshake succeeded (or we'll return error above)
-    let handshake_result = handshake_result.ok_or_else(|| {
-        format!(
-            "Handshake failed for all profiles. Last error: {:?}",
-            last_error
-        )
-    })?;
+    let engine = HandshakeEngine::with_config(*profile, opts.handshake.clone());
+    let stream = try_connect(opts, host, port)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let handshake_result = engine.perform_handshake(stream, server_name).await?;
 
     let detector = PqcDetector::new();
     let analysis = detector.analyze_handshake(&handshake_result);
 
-    // FIXED: Separate profile fallback from TLS 1.2 fallback
-    // Profile fallback: trying different client profiles (MaxPQC → Hybrid → Classical)
-    let profile_fallback_used = attempted_profiles.len() > 1;
-    let profile_fallback_enabled = *profile != ClientProfile::Classic; // Fallback is enabled for non-Classic profiles
-
-    // FIXED: attempts_count should only count actual fallback attempts (excluding initial)
-    let profile_fallback_attempts_count = if attempted_profiles.len() > 1 {
-        (attempted_profiles.len() - 1) as u32
-    } else {
-        0
-    };
-
-    // Only populate attempted_profiles if fallback was actually used
-    let attempted_profiles_list = if profile_fallback_used {
-        attempted_profiles
-            .iter()
-            .map(|p| match p.as_str() {
-                "PqcOnly" => "MaxPQC".to_string(),
-                "HybridPqc" => "Hybrid".to_string(),
-                "Standard" => "Classical".to_string(),
-                "CloudflarePqc" => "Fallback".to_string(),
-                _ => p.clone(),
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
+    // One profile, one handshake: there is no profile fallback chain.
     let fallback = FallbackInfo {
-        enabled: profile_fallback_enabled,
-        used: profile_fallback_used,
-        attempts_count: profile_fallback_attempts_count,
-        attempted_profiles: attempted_profiles_list,
+        enabled: false,
+        used: false,
+        attempts_count: 0,
+        attempted_profiles: Vec::new(),
         fallback_penalty_ms: None,
         tls12_fallback: None,
     };
@@ -403,7 +356,7 @@ pub async fn perform_scan_with_stream(
         extension_map: handshake_result.extension_map.clone(),
         tls_features: handshake_result.tls_features.clone(),
         analysis: analysis.clone(),
-        client_profile_used: profile.consistent_display_name().to_string(),
+        client_profile_used: profile.name().to_string(),
         adaptive_fingerprinting: false,
         server_fingerprint: None,
         fallback: fallback.clone(),
@@ -447,7 +400,7 @@ pub async fn perform_scan_with_stream(
 pub async fn scan_multiple_targets(
     opts: &ScanOptions,
     targets: &[String],
-    profile: ClientProfile,
+    profile: HandshakeProfile,
 ) -> Result<Vec<ScanResult>> {
     let mut results = Vec::new();
     let mut successful_count = 0;
@@ -520,7 +473,7 @@ pub async fn scan_multiple_targets(
                 // Create a failed result for consistency
                 let mut failed_result = ScanResult::new(target.clone());
                 // FIXED: Set profile for failed scans so they don't show "Unknown"
-                failed_result.set_profile(profile.consistent_display_name());
+                failed_result.set_profile(profile.name());
                 failed_result.handshake_complete = false;
                 failed_result.security_warnings = vec![SecurityWarning {
                     message: format!("Scan failed: {}", e),

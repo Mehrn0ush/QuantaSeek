@@ -30,90 +30,96 @@ impl Default for HandshakeConfig {
     }
 }
 
-/// TLS Handshake Profile for different server configurations
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Client profile: which key-exchange groups the ClientHello offers.
+///
+/// Each profile is built only from groups the linked rustls (0.23.46) and
+/// aws-lc-rs (1.19.0) providers implement; see `rustls::crypto::aws_lc_rs::
+/// kx_group` and `ALL_KX_GROUPS` in the rustls source. Groups are offered in
+/// the order listed; rustls sends a key share for the first one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
 pub enum HandshakeProfile {
-    /// Standard TLS 1.3 with classical algorithms only
-    Standard,
-    /// Cloudflare PQC-enabled server profile
-    CloudflarePqc,
-    /// Hybrid PQC with classical fallback
-    HybridPqc,
-    /// PQC-only configuration (experimental)
-    PqcOnly,
+    /// rustls defaults: X25519MLKEM768, x25519, secp256r1, secp384r1 (TLS 1.3, 1.2)
+    Default,
+    /// Classical ECDHE only: x25519, secp256r1, secp384r1 (TLS 1.3, 1.2)
+    Classical,
+    /// Hybrid ML-KEM only: X25519MLKEM768, SecP256r1MLKEM768 (TLS 1.3)
+    Hybrid,
+    /// Pure ML-KEM only: MLKEM1024, MLKEM768 (TLS 1.3)
+    Mlkem,
+    /// Every group rustls supports: hybrids, pure ML-KEM, then classical (TLS 1.3, 1.2)
+    All,
+}
+
+impl HandshakeProfile {
+    pub const ALL_PROFILES: [HandshakeProfile; 5] = [
+        HandshakeProfile::Default,
+        HandshakeProfile::Classical,
+        HandshakeProfile::Hybrid,
+        HandshakeProfile::Mlkem,
+        HandshakeProfile::All,
+    ];
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            HandshakeProfile::Default => "default",
+            HandshakeProfile::Classical => "classical",
+            HandshakeProfile::Hybrid => "hybrid",
+            HandshakeProfile::Mlkem => "mlkem",
+            HandshakeProfile::All => "all",
+        }
+    }
+
+    /// Key-exchange groups offered, in preference order.
+    pub fn kx_groups(&self) -> Vec<&'static dyn rustls::crypto::SupportedKxGroup> {
+        use rustls::crypto::aws_lc_rs::kx_group::*;
+        match self {
+            HandshakeProfile::Default => vec![X25519MLKEM768, X25519, SECP256R1, SECP384R1],
+            HandshakeProfile::Classical => vec![X25519, SECP256R1, SECP384R1],
+            HandshakeProfile::Hybrid => vec![X25519MLKEM768, SECP256R1MLKEM768],
+            HandshakeProfile::Mlkem => vec![MLKEM1024, MLKEM768],
+            HandshakeProfile::All => vec![
+                X25519MLKEM768,
+                SECP256R1MLKEM768,
+                MLKEM1024,
+                MLKEM768,
+                X25519,
+                SECP256R1,
+                SECP384R1,
+            ],
+        }
+    }
+
+    /// IANA names of the offered groups, in preference order.
+    pub fn offered_group_names(&self) -> Vec<String> {
+        self.kx_groups()
+            .iter()
+            .map(|g| crate::constants::get_group_name(u16::from(g.name())))
+            .collect()
+    }
+
+    /// True if every offered group is post-quantum, so only TLS 1.3 is offered.
+    pub fn tls13_only(&self) -> bool {
+        self.kx_groups()
+            .iter()
+            .all(|g| crate::constants::is_pqc_group(u16::from(g.name())))
+    }
 }
 
 impl std::str::FromStr for HandshakeProfile {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "maxpqc" | "max-pqc" | "pqc-only" | "pqconly" | "pqc" => Ok(HandshakeProfile::PqcOnly),
-            "hybrid" | "hybridpqc" | "hybrid-pqc" => Ok(HandshakeProfile::HybridPqc),
-            "standard" | "classic" => Ok(HandshakeProfile::Standard),
-            "cloudflare" | "cloudflarepqc" | "cloudflare-pqc" | "fallback" => {
-                Ok(HandshakeProfile::CloudflarePqc)
-            }
-            other => Err(format!(
-                "Unknown profile: {}. Valid values: standard, cloudflare-pqc, hybrid-pqc, pqc-only",
-                other
-            )),
+        let wanted = s.to_ascii_lowercase();
+        if let Some(p) = Self::ALL_PROFILES.iter().find(|p| p.name() == wanted) {
+            return Ok(*p);
         }
-    }
-}
-
-/// Client Profile for different scanning strategies
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClientProfile {
-    /// Classic client - only classical algorithms
-    Classic,
-    /// Hybrid client - PQC + classical fallback
-    Hybrid,
-    /// Fallback client - starts with PQC, falls back to classical
-    Fallback,
-    /// Maximum PQC client - PQC-only algorithms
-    MaxPqc,
-}
-
-impl ClientProfile {
-    /// Convert to HandshakeProfile for backward compatibility
-    pub fn to_handshake_profile(&self) -> HandshakeProfile {
-        match self {
-            ClientProfile::Classic => HandshakeProfile::Standard,
-            ClientProfile::Hybrid => HandshakeProfile::HybridPqc,
-            ClientProfile::Fallback => HandshakeProfile::CloudflarePqc,
-            ClientProfile::MaxPqc => HandshakeProfile::PqcOnly,
-        }
-    }
-
-    /// Get display name for the profile
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            ClientProfile::Classic => "Classic",
-            ClientProfile::Hybrid => "Hybrid",
-            ClientProfile::Fallback => "Fallback",
-            ClientProfile::MaxPqc => "MaxPQC",
-        }
-    }
-
-    /// Get CLI argument name for the profile
-    pub fn cli_name(&self) -> &'static str {
-        match self {
-            ClientProfile::Classic => "classic",
-            ClientProfile::Hybrid => "hybrid",
-            ClientProfile::Fallback => "fallback",
-            ClientProfile::MaxPqc => "max-pqc",
-        }
-    }
-
-    /// Get consistent display name (matches CLI arguments)
-    pub fn consistent_display_name(&self) -> &'static str {
-        match self {
-            ClientProfile::Classic => "Classic",
-            ClientProfile::Hybrid => "Hybrid",
-            ClientProfile::Fallback => "Fallback",
-            ClientProfile::MaxPqc => "MaxPQC",
-        }
+        let names: Vec<&str> = Self::ALL_PROFILES.iter().map(|p| p.name()).collect();
+        Err(format!(
+            "unknown profile '{}'. Valid profiles: {}",
+            s,
+            names.join(", ")
+        ))
     }
 }
 
@@ -371,8 +377,18 @@ pub enum ErrorCode {
     PermissionDenied,
     /// Generic connection failure (all ports failed)
     ConnectionFailed,
-    /// Handshake failed (TLS/QUIC negotiation failed)
+    /// Handshake failed for a reason not classified below
     HandshakeFailed,
+    /// The server answered our ClientHello with a fatal alert
+    HandshakeRejected,
+    /// The server's certificate chain did not validate
+    CertificateRejected,
+    /// The server sent a message rustls considers invalid or incompatible
+    ProtocolError,
+    /// The server accepted TCP but did not complete the handshake in time
+    HandshakeTimeout,
+    /// The server closed the connection during the handshake
+    ConnectionClosed,
     /// Scan failed (generic; used in batch when no specific code applies)
     ScanFailed,
     /// Unknown or uncategorized error
@@ -393,6 +409,11 @@ impl ErrorCode {
             }
             ErrorCode::PermissionDenied => "Permission denied - may need elevated privileges",
             ErrorCode::ConnectionFailed => "Standard TLS connection failed",
+            ErrorCode::HandshakeRejected => "Server rejected the handshake with a fatal alert",
+            ErrorCode::CertificateRejected => "Server certificate chain did not validate",
+            ErrorCode::ProtocolError => "Server response was invalid or incompatible",
+            ErrorCode::HandshakeTimeout => "Server did not complete the handshake in time",
+            ErrorCode::ConnectionClosed => "Server closed the connection during the handshake",
             ErrorCode::HandshakeFailed => {
                 "Handshake failed - server may not support the requested TLS configuration"
             }
@@ -401,13 +422,23 @@ impl ErrorCode {
         }
     }
 
-    /// Optional recommendation for remediation
-    pub fn recommendation(&self) -> Option<&'static str> {
+    /// Whether this outcome describes the network, the server, or the scanner.
+    pub fn category(&self) -> ErrorCategory {
         match self {
-            ErrorCode::ConnectionFailed | ErrorCode::HandshakeFailed => {
-                Some("Try with different profiles (standard, cloudflare-pqc) or check if server supports PQC/TLS 1.3. For experimental servers, try ports 853, 4433.")
-            }
-            _ => None,
+            ErrorCode::HandshakeRejected
+            | ErrorCode::CertificateRejected
+            | ErrorCode::ProtocolError
+            | ErrorCode::ConnectionClosed => ErrorCategory::ServerResult,
+            ErrorCode::ConnectionRefused
+            | ErrorCode::ConnectionTimeout
+            | ErrorCode::DnsFailed
+            | ErrorCode::ConnectionReset
+            | ErrorCode::ConnectionFailed
+            | ErrorCode::HandshakeTimeout => ErrorCategory::Network,
+            ErrorCode::PermissionDenied
+            | ErrorCode::HandshakeFailed
+            | ErrorCode::ScanFailed
+            | ErrorCode::Unknown => ErrorCategory::Scanner,
         }
     }
 }
@@ -422,14 +453,49 @@ impl std::fmt::Display for ErrorCode {
             ErrorCode::PermissionDenied => write!(f, "permission_denied"),
             ErrorCode::ConnectionFailed => write!(f, "connection_failed"),
             ErrorCode::HandshakeFailed => write!(f, "handshake_failed"),
+            ErrorCode::HandshakeRejected => write!(f, "handshake_rejected"),
+            ErrorCode::CertificateRejected => write!(f, "certificate_rejected"),
+            ErrorCode::ProtocolError => write!(f, "protocol_error"),
+            ErrorCode::HandshakeTimeout => write!(f, "handshake_timeout"),
+            ErrorCode::ConnectionClosed => write!(f, "connection_closed"),
             ErrorCode::ScanFailed => write!(f, "scan_failed"),
             ErrorCode::Unknown => write!(f, "unknown"),
         }
     }
 }
 
+/// What an unsuccessful outcome tells us about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCategory {
+    /// The server responded, and the response is itself a scan result
+    /// (e.g. it rejected every group the profile offered).
+    ServerResult,
+    /// No usable response: DNS, TCP, or a timeout.
+    Network,
+    /// A failure inside the scanner or an unclassified error.
+    Scanner,
+}
+
+/// A statement the scanner inferred rather than observed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Inference {
+    /// Always "inferred".
+    pub provenance: String,
+    pub statement: String,
+}
+
+impl Inference {
+    pub fn new(statement: impl Into<String>) -> Self {
+        Self {
+            provenance: "inferred".to_string(),
+            statement: statement.into(),
+        }
+    }
+}
+
 /// Schema version for the error object. Bump when adding or changing fields.
-pub const ERROR_SCHEMA_VERSION: u32 = 1;
+pub const ERROR_SCHEMA_VERSION: u32 = 2;
 
 /// Structured error information for a scan (stable JSON schema).
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -444,23 +510,20 @@ pub struct ScanError {
     /// Optional additional details for debugging (e.g. ports_tried, flags)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
-    /// Optional recommendation for remediation
+    /// Whether the outcome describes the server, the network, or the scanner
+    pub category: ErrorCategory,
+    /// Fatal TLS alert received from the server, if any (observed)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub recommendation: Option<String>,
+    pub alert: Option<String>,
+    /// Likely cause, when the scanner can only infer it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interpretation: Option<Inference>,
 }
 
 impl ScanError {
     /// Build a ScanError from a stable ErrorCode with optional context in details.
     pub fn from_code(code: ErrorCode, details: Option<String>) -> Self {
-        let message = code.default_message().to_string();
-        let recommendation = code.recommendation().map(String::from);
-        ScanError {
-            schema_version: ERROR_SCHEMA_VERSION,
-            code: code.to_string(),
-            message,
-            details,
-            recommendation,
-        }
+        Self::from_code_with_message(code, code.default_message().to_string(), details)
     }
 
     /// Build with a custom message (e.g. from underlying error string) but stable code.
@@ -469,13 +532,14 @@ impl ScanError {
         message: String,
         details: Option<String>,
     ) -> Self {
-        let recommendation = code.recommendation().map(String::from);
         ScanError {
             schema_version: ERROR_SCHEMA_VERSION,
             code: code.to_string(),
             message,
             details,
-            recommendation,
+            category: code.category(),
+            alert: None,
+            interpretation: None,
         }
     }
 }

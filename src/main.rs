@@ -3,10 +3,9 @@ use clap::Parser;
 use quanta_seek::scan::{scan_multiple_targets, scan_target, ScanOptions};
 use quanta_seek::{
     output::output_results,
-    types::{ClientProfile, HandshakeConfig, OutputFormat, ScanResult},
+    types::{HandshakeConfig, OutputFormat, ScanResult},
     HandshakeProfile,
 };
-use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 /// QuantaSeek: report the TLS key exchange and certificate algorithms an
@@ -18,9 +17,8 @@ struct Cli {
     #[arg(required = true, num_args = 1.., value_delimiter = ',')]
     targets: Vec<String>,
 
-    /// Handshake profile label: standard, cloudflare-pqc, hybrid-pqc, pqc-only.
-    /// Currently every profile sends the same ClientHello (see README, Limitations).
-    #[arg(short, long, default_value = "cloudflare-pqc", value_parser = HandshakeProfile::from_str)]
+    /// Key-exchange groups the ClientHello offers
+    #[arg(short, long, value_enum, default_value_t = HandshakeProfile::Default)]
     profile: HandshakeProfile,
 
     /// Output format
@@ -97,12 +95,7 @@ async fn main() -> Result<()> {
         ..ScanOptions::default()
     };
 
-    let profile = match cli.profile {
-        HandshakeProfile::Standard => ClientProfile::Classic,
-        HandshakeProfile::CloudflarePqc => ClientProfile::Fallback,
-        HandshakeProfile::HybridPqc => ClientProfile::Hybrid,
-        HandshakeProfile::PqcOnly => ClientProfile::MaxPqc,
-    };
+    let profile = cli.profile;
     let format = match cli.format {
         FormatArg::Json => OutputFormat::Json,
         FormatArg::Text => OutputFormat::Text,
@@ -111,7 +104,11 @@ async fn main() -> Result<()> {
 
     tracing::info!("QuantaSeek {}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Targets: {}", targets.join(", "));
-    tracing::info!("Profile: {}", profile.display_name());
+    tracing::info!(
+        "Profile: {} (offers {})",
+        profile.name(),
+        profile.offered_group_names().join(", ")
+    );
 
     let scan_start = Instant::now();
 

@@ -186,3 +186,22 @@ pub async fn spawn(spec: ServerSpec) -> TestServer {
 pub fn init() {
     let _ = aws_lc_rs::default_provider().install_default();
 }
+
+/// A server that accepts TCP connections and never sends anything.
+pub async fn spawn_silent() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((tcp, _)) = listener.accept().await {
+            held.push(tcp);
+        }
+    });
+    addr
+}
+
+/// A loopback port with nothing listening on it.
+pub async fn closed_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    listener.local_addr().unwrap().port()
+}

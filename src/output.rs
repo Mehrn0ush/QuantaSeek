@@ -66,14 +66,7 @@ impl ScanResult {
         self.certificate_visible = handshake_result.certificate_visible;
         self.handshake_complete = handshake_result.handshake_complete;
         self.handshake_duration_ms = handshake_result.handshake_duration_ms;
-        // FIXED: Convert HandshakeProfile to consistent display name matching CLI arguments
-        // Map HandshakeProfile to ClientProfile display name for consistency
-        self.client_profile_used = match handshake_result.client_profile_used {
-            crate::types::HandshakeProfile::Standard => "Classic".to_string(),
-            crate::types::HandshakeProfile::CloudflarePqc => "Fallback".to_string(),
-            crate::types::HandshakeProfile::HybridPqc => "Hybrid".to_string(),
-            crate::types::HandshakeProfile::PqcOnly => "MaxPQC".to_string(), // FIXED: PqcOnly -> MaxPQC for consistency
-        };
+        self.client_profile_used = handshake_result.client_profile_used.name().to_string();
 
         if let Some(ref cert_info) = handshake_result.certificate_info {
             self.certificate = Some(cert_info.clone());
@@ -983,7 +976,7 @@ mod tests {
             pqc_signature_used: Some(false),
             tls_features: TlsFeatures::default(),
             handshake_duration_ms: Some(150),
-            client_profile_used: HandshakeProfile::CloudflarePqc,
+            client_profile_used: HandshakeProfile::Default,
             extension_map: crate::types::ExtensionMap::default(),
             connection_type: None,
             cipher_suite_reason: None,
@@ -995,8 +988,7 @@ mod tests {
         assert_eq!(result.analysis.tls_version, "TLS 1.3");
         assert!(result.analysis.pqc_detected);
         assert_eq!(result.handshake_duration_ms, Some(150));
-        // HandshakeProfile::CloudflarePqc maps to "Fallback" in update_from_handshake
-        assert_eq!(result.client_profile_used, "Fallback");
+        assert_eq!(result.client_profile_used, "default");
     }
 
     #[test]

@@ -275,17 +275,9 @@ impl PqcDetector {
         ));
     }
 
-    /// Groups offered in our ClientHello, in preference order.
-    ///
-    /// The handshake profile does not change the ClientHello: every profile
-    /// uses the rustls aws-lc-rs default provider, so this reports what that
-    /// provider actually offers rather than what the profile name suggests.
-    fn extract_client_offered_kems(&self, _handshake_result: &HandshakeResult) -> Vec<String> {
-        rustls::crypto::aws_lc_rs::default_provider()
-            .kx_groups
-            .iter()
-            .map(|g| crate::constants::get_group_name(u16::from(g.name())))
-            .collect()
+    /// Groups offered in our ClientHello, in preference order (from the profile).
+    fn extract_client_offered_kems(&self, handshake_result: &HandshakeResult) -> Vec<String> {
+        handshake_result.client_profile_used.offered_group_names()
     }
 
     /// Extract client extensions from handshake result
@@ -860,7 +852,7 @@ mod tests {
             pqc_signature_used: None, // Unknown - no certificate or CertificateVerify available
             tls_features: TlsFeatures::default(),
             handshake_duration_ms: None,
-            client_profile_used: HandshakeProfile::Standard,
+            client_profile_used: HandshakeProfile::Default,
             extension_map: crate::types::ExtensionMap::default(),
             connection_type: None,
             cipher_suite_reason: None,
