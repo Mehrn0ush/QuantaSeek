@@ -30,12 +30,6 @@
 //! - `constants.rs`: TLS and PQC constants with IETF references
 //! - `cert.rs`: Certificate parsing and analysis
 
-// Pull in pinned deps for security audit (RUSTSEC-2026-0007, RUSTSEC-2026-0009)
-#[allow(unused_imports)]
-use bytes as _;
-#[allow(unused_imports)]
-use time as _;
-
 pub mod cert;
 pub mod constants;
 pub mod detailed_pqc_analysis;

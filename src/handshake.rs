@@ -126,6 +126,13 @@ impl ServerCertVerifier for CapturingVerifier {
     }
 }
 
+/// Root store built from the Mozilla-derived `webpki-roots` bundle.
+pub fn webpki_root_store() -> RootCertStore {
+    RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    }
+}
+
 pub struct HandshakeEngine {
     profile: HandshakeProfile,
     config: HandshakeConfig,
@@ -1174,13 +1181,7 @@ impl HandshakeEngine {
 
         // In rustls 0.23, RootCertStore can be created from webpki_roots directly
         let root_store =
-            RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                rustls::pki_types::TrustAnchor {
-                    subject: ta.subject.into(),
-                    subject_public_key_info: ta.spki.into(),
-                    name_constraints: ta.name_constraints.map(|nc| nc.into()),
-                }
-            }));
+            crate::handshake::webpki_root_store();
 
         // FIXED: Create shared mutex to capture TLS 1.3 CertificateVerify signature scheme
         let captured_scheme: Arc<Mutex<Option<SignatureScheme>>> = Arc::new(Mutex::new(None));
@@ -1554,7 +1555,7 @@ impl HandshakeEngine {
         port: u16,
     ) -> Result<HandshakeResult> {
         use rustls::pki_types::ServerName;
-        use rustls::{ClientConfig, RootCertStore};
+        use rustls::ClientConfig;
         use std::sync::Arc;
         use std::time::Instant;
         use tokio::net::TcpStream;
@@ -1564,13 +1565,7 @@ impl HandshakeEngine {
 
         // Create TLS 1.2 configuration
         let root_store =
-            RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                rustls::pki_types::TrustAnchor {
-                    subject: ta.subject.into(),
-                    subject_public_key_info: ta.spki.into(),
-                    name_constraints: ta.name_constraints.map(|nc| nc.into()),
-                }
-            }));
+            crate::handshake::webpki_root_store();
 
         // PATH A: Use TLS 1.3 + 1.2 instead of only TLS 1.2 for better compatibility
         let mut config = ClientConfig::builder()
@@ -1756,20 +1751,14 @@ impl HandshakeEngine {
     ) -> Result<Option<crate::types::CertificateInfo>> {
         // Real TLS implementation using rustls - supports both TLS 1.3 and 1.2
         use rustls::pki_types::ServerName;
-        use rustls::{ClientConfig, RootCertStore};
+        use rustls::ClientConfig;
         use std::sync::Arc;
         use tokio::net::TcpStream;
         use tokio_rustls::TlsConnector;
 
         // Create TLS configuration supporting both TLS 1.3 and 1.2
         let root_store =
-            RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                rustls::pki_types::TrustAnchor {
-                    subject: ta.subject.into(),
-                    subject_public_key_info: ta.spki.into(),
-                    name_constraints: ta.name_constraints.map(|nc| nc.into()),
-                }
-            }));
+            crate::handshake::webpki_root_store();
 
         // PATH A: Use TLS 1.3 + 1.2 instead of only TLS 1.2 for better compatibility
         let mut config = ClientConfig::builder()

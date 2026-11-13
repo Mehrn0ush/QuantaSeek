@@ -374,7 +374,7 @@ pub async fn detect_http_redirects_with_method(
 async fn get_certificate_from_url(url: &str) -> Result<CertificateInfo> {
     debug_eprintln!("  [DEBUG] get_certificate_from_url: connecting to {}", url);
     use rustls::pki_types::ServerName;
-    use rustls::{ClientConfig, RootCertStore};
+    use rustls::ClientConfig;
     use std::sync::Arc;
     use tokio::net::TcpStream;
     use tokio_rustls::TlsConnector;
@@ -389,13 +389,7 @@ async fn get_certificate_from_url(url: &str) -> Result<CertificateInfo> {
     let port = parsed_url.port().unwrap_or(443);
 
     // Create TLS configuration
-    let root_store = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-        rustls::pki_types::TrustAnchor {
-            subject: ta.subject.into(),
-            subject_public_key_info: ta.spki.into(),
-            name_constraints: ta.name_constraints.map(|nc| nc.into()),
-        }
-    }));
+    let root_store = crate::handshake::webpki_root_store();
 
     let mut config = ClientConfig::builder()
         .with_root_certificates(root_store)
@@ -466,6 +460,7 @@ mod tests {
 
     /// Test that detect_http_redirects handles non-redirecting URLs correctly
     #[tokio::test]
+    #[ignore = "requires network access to example.com"]
     async fn test_no_redirect() {
         // Test with a URL that doesn't redirect
         // Note: This test may fail if the server actually redirects
