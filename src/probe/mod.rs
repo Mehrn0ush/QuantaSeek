@@ -23,7 +23,8 @@ use wire::{ClientHelloSpec, Reply};
 pub struct ProbeOptions {
     /// Maximum number of probes (TCP connections) per target.
     pub max_probes: u32,
-    /// Minimum delay between the start of consecutive probes.
+    /// Minimum delay between the start of consecutive probes. Each delay is
+    /// this plus a random jitter of up to half of it.
     pub spacing: Duration,
     /// Time allowed for the server's first reply.
     pub reply_timeout: Duration,
@@ -43,6 +44,14 @@ impl Default for ProbeOptions {
 /// the split variant, in the tolerance probes.
 pub const PADDED_CLIENT_HELLO_BYTES: usize = 2048;
 pub const SPLIT_RECORD_BYTES: usize = 512;
+/// Split-segment variant: bytes in the first TCP write, and the pause
+/// before the rest (with TCP_NODELAY, so the two writes leave as separate
+/// segments on an unloaded path).
+pub const SPLIT_SEGMENT_BYTES: usize = 64;
+pub const SPLIT_SEGMENT_PAUSE: Duration = Duration::from_millis(50);
+/// Probing stops after this many consecutive probes fail to connect
+/// (refused, reset, timed out at TCP level).
+pub const ABORT_AFTER_CONNECT_FAILURES: u32 = 3;
 
 /// Outcome of one probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,10 +70,35 @@ struct Prober<'a> {
     server_name: &'a str,
     sent: u32,
     exhausted: bool,
+    consecutive_connect_failures: u32,
+    aborted: bool,
+}
+
+/// How the ClientHello bytes are written.
+#[derive(Debug, Clone, Copy)]
+enum Framing {
+    /// Records of at most this many bytes, one write.
+    Records(usize),
+    /// One record, written in two TCP writes with a pause between.
+    SplitSegment,
+}
+
+fn jittered(spacing: Duration) -> Duration {
+    let mut b = [0u8; 2];
+    let _ = aws_lc_rs::rand::SecureRandom::fill(&aws_lc_rs::rand::SystemRandom::new(), &mut b);
+    let fraction = u16::from_be_bytes(b) as f64 / u16::MAX as f64; // 0..=1
+    spacing + spacing.mul_f64(0.5 * fraction)
 }
 
 impl Prober<'_> {
     async fn send(&mut self, spec: ClientHelloSpec, max_fragment: usize) -> Outcome {
+        self.send_framed(spec, Framing::Records(max_fragment)).await
+    }
+
+    async fn send_framed(&mut self, spec: ClientHelloSpec, framing: Framing) -> Outcome {
+        if self.aborted {
+            return Outcome::NotSent("probing aborted after repeated connection failures");
+        }
         if self.sent >= self.opts.max_probes {
             self.exhausted = true;
             return Outcome::NotSent("probe budget exhausted");
@@ -76,14 +110,38 @@ impl Prober<'_> {
             return Outcome::NotSent("key share could not be generated");
         };
         if self.sent > 0 {
-            tokio::time::sleep(self.opts.spacing).await;
+            tokio::time::sleep(jittered(self.opts.spacing)).await;
         }
         self.sent += 1;
         let mut stream = match try_connect(self.scan, self.host, self.port).await {
-            Ok(s) => s,
-            Err(e) => return Outcome::ConnectFailed(e.message),
+            Ok(s) => {
+                self.consecutive_connect_failures = 0;
+                s
+            }
+            Err(e) => {
+                self.consecutive_connect_failures += 1;
+                if self.consecutive_connect_failures >= ABORT_AFTER_CONNECT_FAILURES {
+                    self.aborted = true;
+                }
+                return Outcome::ConnectFailed(e.message);
+            }
         };
-        if let Err(e) = stream.write_all(&wire::records(&hello, max_fragment)).await {
+        let written = match framing {
+            Framing::Records(max) => stream.write_all(&wire::records(&hello, max)).await,
+            Framing::SplitSegment => {
+                let bytes = wire::records(&hello, 16384);
+                let cut = SPLIT_SEGMENT_BYTES.min(bytes.len());
+                match stream.write_all(&bytes[..cut]).await {
+                    Ok(()) => {
+                        let _ = stream.flush().await;
+                        tokio::time::sleep(SPLIT_SEGMENT_PAUSE).await;
+                        stream.write_all(&bytes[cut..]).await
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        };
+        if let Err(e) = written {
             return Outcome::ConnectFailed(e.to_string());
         }
         let mut received = Vec::new();
@@ -195,6 +253,8 @@ pub async fn probe(
         server_name,
         sent: 0,
         exhausted: false,
+        consecutive_connect_failures: 0,
+        aborted: false,
     };
 
     // 1. Group enumeration: one group, one key share per probe.
@@ -333,7 +393,8 @@ pub async fn probe(
                     16384,
                 )
                 .await;
-            let split = p.send(spec, SPLIT_RECORD_BYTES).await;
+            let split = p.send(spec.clone(), SPLIT_RECORD_BYTES).await;
+            let segments = p.send_framed(spec, Framing::SplitSegment).await;
             let label = |o: &Outcome| {
                 if ok(o) {
                     "ok".to_string()
@@ -348,6 +409,8 @@ pub async fn probe(
                 padded_bytes: PADDED_CLIENT_HELLO_BYTES as u32,
                 split_records: label(&split),
                 split_record_bytes: SPLIT_RECORD_BYTES as u32,
+                split_segments: label(&segments),
+                first_segment_bytes: SPLIT_SEGMENT_BYTES as u32,
             })
         }
         None => None,
@@ -361,6 +424,7 @@ pub async fn probe(
         probe_budget: opts.max_probes,
         spacing_ms: opts.spacing.as_millis() as u64,
         budget_exhausted: p.exhausted,
+        aborted: p.aborted,
         accepted_groups: accepted.iter().copied().map(name).collect(),
         groups,
         preference,

@@ -15,6 +15,21 @@ async fn probe(
     groups: Vec<&'static dyn SupportedKxGroup>,
     budget: u32,
 ) -> (ProbeReport, TestServer) {
+    probe_with(
+        groups,
+        ProbeOptions {
+            max_probes: budget,
+            spacing: Duration::ZERO,
+            reply_timeout: Duration::from_secs(2),
+        },
+    )
+    .await
+}
+
+async fn probe_with(
+    groups: Vec<&'static dyn SupportedKxGroup>,
+    probe_opts: ProbeOptions,
+) -> (ProbeReport, TestServer) {
     init();
     let pki = TestPki::new("probe");
     let server = spawn(ServerSpec {
@@ -29,11 +44,7 @@ async fn probe(
             trust_anchors: Some(pki.roots()),
             timeout_ms: 2000,
         },
-        probe: Some(ProbeOptions {
-            max_probes: budget,
-            spacing: Duration::ZERO,
-            reply_timeout: Duration::from_secs(2),
-        }),
+        probe: Some(probe_opts),
         ..ScanOptions::default()
     };
     let report = scan_target(
@@ -129,4 +140,58 @@ async fn budget_is_enforced() {
         .any(|g| g.detail.as_deref() == Some("probe budget exhausted")));
     // One handshake plus three probes.
     assert_eq!(server.connections(), 4);
+}
+
+#[tokio::test]
+async fn default_spacing_is_at_least_100ms_with_jitter() {
+    let defaults = ProbeOptions::default();
+    assert_eq!(defaults.max_probes, 40);
+    assert!(defaults.spacing >= Duration::from_millis(100));
+    let (p, server) = probe_with(
+        vec![X25519],
+        ProbeOptions {
+            max_probes: 5,
+            ..ProbeOptions::default()
+        },
+    )
+    .await;
+    assert_eq!(p.probes_sent, 5);
+    assert_eq!(p.spacing_ms, 100);
+    let times = server.accept_times.lock().unwrap().clone();
+    assert_eq!(times.len(), 6); // one handshake + five probes
+    for pair in times[1..].windows(2) {
+        let gap = pair[1] - pair[0];
+        // spacing plus jitter of at most half of it (small scheduling slack).
+        assert!(gap >= Duration::from_millis(100), "{gap:?}");
+        assert!(gap < Duration::from_millis(400), "{gap:?}");
+    }
+}
+
+#[tokio::test]
+async fn probing_aborts_after_repeated_connect_failures() {
+    init();
+    let scan = ScanOptions {
+        connect_timeout: Duration::from_secs(1),
+        ..ScanOptions::default()
+    };
+    let opts = ProbeOptions {
+        spacing: Duration::ZERO,
+        ..ProbeOptions::default()
+    };
+    let port = closed_port().await;
+    let p = quanta_seek::probe::probe(&scan, &opts, "127.0.0.1", port, "localhost").await;
+    assert!(p.aborted);
+    assert_eq!(
+        p.probes_sent,
+        quanta_seek::probe::ABORT_AFTER_CONNECT_FAILURES
+    );
+    assert!(p.accepted_groups.is_empty());
+    let skipped = p
+        .groups
+        .iter()
+        .filter(|g| {
+            g.detail.as_deref() == Some("probing aborted after repeated connection failures")
+        })
+        .count();
+    assert!(skipped > 0);
 }

@@ -270,6 +270,8 @@ pub struct ProbeReport {
     pub spacing_ms: u64,
     /// True if some probes were skipped because the budget ran out.
     pub budget_exhausted: bool,
+    /// True if probing stopped after repeated TCP connection failures.
+    pub aborted: bool,
     /// Groups the server accepted when offered alone with a key share.
     pub accepted_groups: Vec<String>,
     /// One entry per registered group.
@@ -348,6 +350,10 @@ pub struct ToleranceProbe {
     pub padded_bytes: u32,
     pub split_records: String,
     pub split_record_bytes: u32,
+    /// One record written as two TCP writes (the first `first_segment_bytes`
+    /// long) with a pause between them.
+    pub split_segments: String,
+    pub first_segment_bytes: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -809,8 +815,8 @@ impl ScanReport {
             if let Some(t) = &p.client_hello_tolerance {
                 let _ = writeln!(
                     out,
-                    "          ClientHello tolerance: baseline {}, padded {}, split {}",
-                    t.baseline, t.padded, t.split_records
+                    "          ClientHello tolerance: baseline {}, padded {}, split records {}, split segments {}",
+                    t.baseline, t.padded, t.split_records, t.split_segments
                 );
             }
         }
@@ -830,6 +836,20 @@ mod tests {
             cipher_suite_name(0xc02b),
             "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
         );
+    }
+
+    #[test]
+    fn certificate_families_cover_every_pqc_oid_kind() {
+        assert_eq!(family_of("2.16.840.1.101.3.4.3.18"), "ml_dsa");
+        assert_eq!(family_of("2.16.840.1.101.3.4.3.33"), "hash_ml_dsa");
+        assert_eq!(family_of("2.16.840.1.101.3.4.3.20"), "slh_dsa");
+        assert_eq!(family_of("2.16.840.1.101.3.4.3.36"), "hash_slh_dsa");
+        assert_eq!(family_of("2.16.840.1.101.3.4.4.2"), "ml_kem");
+        assert_eq!(family_of("1.3.6.1.5.5.7.6.46"), "composite_ml_dsa");
+        assert_eq!(family_of("1.2.840.10045.4.3.2"), "classical");
+        // oqs-provider prototype composite OID: not RFC 10073, not recognised.
+        assert_eq!(family_of("1.3.9999.7.7"), "unrecognised");
+        assert!(is_pq_family("composite_ml_dsa") && !is_pq_family("unrecognised"));
     }
 
     #[test]

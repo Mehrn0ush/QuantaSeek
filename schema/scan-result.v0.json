@@ -514,6 +514,10 @@
       "additionalProperties": false,
       "description": "Results of per-group probing (`--probe`). Every result is an observation\nof the server's first reply to a ClientHello QuantaSeek built; results\nare \"accepted\"/\"server_hello\", \"hello_retry_request\", \"rejected\" (with\n`alert`), \"closed\", \"timeout\", \"malformed\", \"connect_failed\", or\n\"not_probed\" (with `detail`).",
       "properties": {
+        "aborted": {
+          "description": "True if probing stopped after repeated TCP connection failures.",
+          "type": "boolean"
+        },
         "accepted_groups": {
           "description": "Groups the server accepted when offered alone with a key share.",
           "items": {
@@ -598,6 +602,7 @@
         "probe_budget",
         "spacing_ms",
         "budget_exhausted",
+        "aborted",
         "accepted_groups",
         "groups",
         "preference",
@@ -807,6 +812,11 @@
           "description": "\"ok\" (ServerHello or HelloRetryRequest), otherwise the probe result.",
           "type": "string"
         },
+        "first_segment_bytes": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
         "group": {
           "description": "Group offered in all three variants.",
           "type": "string"
@@ -826,6 +836,10 @@
         },
         "split_records": {
           "type": "string"
+        },
+        "split_segments": {
+          "description": "One record written as two TCP writes (the first `first_segment_bytes`\nlong) with a pause between them.",
+          "type": "string"
         }
       },
       "required": [
@@ -834,7 +848,9 @@
         "padded",
         "padded_bytes",
         "split_records",
-        "split_record_bytes"
+        "split_record_bytes",
+        "split_segments",
+        "first_segment_bytes"
       ],
       "type": "object"
     },

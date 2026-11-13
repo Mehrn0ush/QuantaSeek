@@ -683,4 +683,7 @@ async fn probe_detects_client_hello_size_intolerance() {
         t.split_records, "ok",
         "512-byte records pass the first-record check"
     );
+    // The proxy reads the 5-byte record header with ReadFull, so a record
+    // split across TCP segments is judged by its (small) length: passes.
+    assert_eq!(t.split_segments, "ok");
 }

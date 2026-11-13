@@ -87,6 +87,8 @@ pub struct TestServer {
     pub accepted: Arc<Mutex<Vec<Accepted>>>,
     /// TCP connections accepted, whether or not the handshake succeeded.
     pub connections: Arc<Mutex<usize>>,
+    /// When each TCP connection was accepted.
+    pub accept_times: Arc<Mutex<Vec<std::time::Instant>>>,
 }
 
 impl TestServer {
@@ -136,15 +138,17 @@ pub async fn spawn_on(spec: ServerSpec, bind: &str) -> Option<TestServer> {
     let addr = listener.local_addr().unwrap();
     let accepted = Arc::new(Mutex::new(Vec::new()));
     let connections = Arc::new(Mutex::new(0usize));
+    let accept_times = Arc::new(Mutex::new(Vec::new()));
     let http_response = spec.http_response;
 
-    let (acc, conns) = (accepted.clone(), connections.clone());
+    let (acc, conns, times) = (accepted.clone(), connections.clone(), accept_times.clone());
     tokio::spawn(async move {
         loop {
             let Ok((tcp, _)) = listener.accept().await else {
                 return;
             };
             *conns.lock().unwrap() += 1;
+            times.lock().unwrap().push(std::time::Instant::now());
             let acceptor = acceptor.clone();
             let acc = acc.clone();
             let http_response = http_response.clone();
@@ -184,6 +188,7 @@ pub async fn spawn_on(spec: ServerSpec, bind: &str) -> Option<TestServer> {
         addr,
         accepted,
         connections,
+        accept_times,
     })
 }
 
