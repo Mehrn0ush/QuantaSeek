@@ -473,10 +473,7 @@ async fn scan_target(
                     .map(String::from),
             )
         } else {
-            (
-                error_code,
-                error_code.recommendation().map(String::from),
-            )
+            (error_code, error_code.recommendation().map(String::from))
         };
 
         result.security_warnings.push(SecurityWarning {

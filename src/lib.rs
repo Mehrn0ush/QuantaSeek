@@ -58,8 +58,8 @@ pub use security_scoring::SecurityScorer;
 pub use signature_detector::SignatureDetector;
 pub use types::{
     CertificateInfo, ClientProfile, ErrorCode, ExtensionMap, FallbackInfo, HandshakeProfile,
-    HandshakeResult, OutputFormat, PqcAnalysis, PqcExtensions, ScanError, ScanResult, SecurityScore,
-    SignatureNegotiationStatus, TlsFeatures,
+    HandshakeResult, OutputFormat, PqcAnalysis, PqcExtensions, ScanError, ScanResult,
+    SecurityScore, SignatureNegotiationStatus, TlsFeatures,
 };
 
 /// Returns true if verbose/debug output is requested (QUANTASEEK_DEBUG=1 or --verbose).

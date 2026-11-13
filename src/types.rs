@@ -420,16 +420,12 @@ impl ErrorCode {
             ErrorCode::ConnectionRefused => {
                 "Connection refused - server may be offline or not listening on TLS ports"
             }
-            ErrorCode::ConnectionTimeout => {
-                "Connection timeout - server may be slow or overloaded"
-            }
+            ErrorCode::ConnectionTimeout => "Connection timeout - server may be slow or overloaded",
             ErrorCode::DnsFailed => "DNS resolution failed - check hostname spelling",
             ErrorCode::ConnectionReset => {
                 "Connection reset - server may not support the requested TLS configuration"
             }
-            ErrorCode::PermissionDenied => {
-                "Permission denied - may need elevated privileges"
-            }
+            ErrorCode::PermissionDenied => "Permission denied - may need elevated privileges",
             ErrorCode::QuicOnlyOrTlsUnavailable => {
                 "QUIC support detected but TLS connection failed"
             }
@@ -513,7 +509,11 @@ impl ScanError {
     }
 
     /// Build with a custom message (e.g. from underlying error string) but stable code.
-    pub fn from_code_with_message(code: ErrorCode, message: String, details: Option<String>) -> Self {
+    pub fn from_code_with_message(
+        code: ErrorCode,
+        message: String,
+        details: Option<String>,
+    ) -> Self {
         let recommendation = code.recommendation().map(String::from);
         ScanError {
             schema_version: ERROR_SCHEMA_VERSION,
