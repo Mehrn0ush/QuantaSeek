@@ -1,43 +1,29 @@
-//! QuantaSeek: a TLS scanner that reports negotiated key exchange and
-//! certificate algorithms, with a focus on post-quantum cryptography.
+//! QuantaSeek: a TLS scanner that reports the key exchange and certificate
+//! algorithms an endpoint negotiates, with a focus on post-quantum
+//! cryptography.
 //!
 //! The `quantaseek` binary (`src/main.rs`) is the main consumer of this
 //! library. The library API is not stable before 1.0.
 //!
 //! ## Modules
 //!
-//! - [`handshake`]: TLS handshake engine (rustls) and raw record capture
-//! - [`tls_parser`]: ServerHello parsing (cipher suite, `key_share` group)
-//! - [`detector`]: classification of the negotiated algorithms
-//! - [`cert`]: X.509 certificate parsing (x509-parser)
+//! - [`scan`]: target parsing, connection, outcome classification
+//! - [`handshake`]: one rustls handshake, recorded as an [`handshake::Observation`]
+//! - [`report`]: the output (schema v0) and how each field is derived
 //! - [`constants`]: TLS codepoint and X.509 OID registry, with sources
-//! - [`output`]: JSON and text formatting
+//! - [`cert`]: X.509 algorithm naming
+//! - [`http_redirect`]: opt-in redirect following
 //!
 //! See README.md for what the scanner can and cannot observe.
 
 pub mod cert;
 pub mod constants;
-pub mod detailed_pqc_analysis;
-pub mod detector;
 pub mod handshake;
 pub mod http_redirect;
-pub mod output;
+pub mod report;
 pub mod scan;
-pub mod security_scoring;
-pub mod signature_detector;
-pub mod tls_parser;
 pub mod types;
 
-// Re-export main types for easier access
-pub use detector::PqcDetector;
-pub use handshake::HandshakeEngine;
-pub use http_redirect::{follow_redirects, RedirectOptions};
-pub use output::output_results;
-pub use output::OutputFormatter;
-pub use security_scoring::SecurityScorer;
-pub use signature_detector::SignatureDetector;
-pub use types::{
-    CertificateInfo, ErrorCategory, ErrorCode, ExtensionMap, FallbackInfo, HandshakeProfile,
-    HandshakeResult, OutputFormat, PqcAnalysis, PqcExtensions, ScanError, ScanResult,
-    SecurityScore, SignatureNegotiationStatus, TlsFeatures,
-};
+pub use handshake::{HandshakeEngine, Observation};
+pub use report::ScanReport;
+pub use types::{ErrorCategory, ErrorCode, HandshakeConfig, HandshakeProfile, ScanError};

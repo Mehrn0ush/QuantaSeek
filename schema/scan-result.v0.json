@@ -1,0 +1,650 @@
+{
+  "$defs": {
+    "AlgorithmReport": {
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "description": "\"classical\", \"ml_dsa\", \"hash_ml_dsa\", \"slh_dsa\", \"hash_slh_dsa\",\n\"ml_kem\", \"composite_ml_dsa\", or \"unrecognised\".",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "oid": {
+          "type": "string"
+        },
+        "size_bits": {
+          "description": "Key size in bits, where the algorithm has one and it was parsed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "oid",
+        "name",
+        "family"
+      ],
+      "type": "object"
+    },
+    "CertificateReport": {
+      "additionalProperties": false,
+      "properties": {
+        "issuer": {
+          "type": "string"
+        },
+        "not_after": {
+          "type": "string"
+        },
+        "not_before": {
+          "type": "string"
+        },
+        "position": {
+          "description": "0 = leaf, in the order the server sent them.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "public_key": {
+          "$ref": "#/$defs/AlgorithmReport"
+        },
+        "san_dns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "san_ip": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "serial_hex": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "signature": {
+          "$ref": "#/$defs/AlgorithmReport"
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "position",
+        "subject",
+        "issuer",
+        "serial_hex",
+        "not_before",
+        "not_after",
+        "san_dns",
+        "san_ip",
+        "public_key",
+        "signature",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "CodeName": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "name"
+      ],
+      "type": "object"
+    },
+    "Derived": {
+      "additionalProperties": false,
+      "description": "A value derived from observed data by a stated rule.",
+      "properties": {
+        "basis": {
+          "type": "string"
+        },
+        "provenance": {
+          "description": "Always \"derived\".",
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "provenance",
+        "basis"
+      ],
+      "type": "object"
+    },
+    "ErrorCategory": {
+      "description": "What an unsuccessful outcome tells us about.",
+      "oneOf": [
+        {
+          "const": "server_result",
+          "description": "The server responded, and the response is itself a scan result\n(e.g. it rejected every group the profile offered).",
+          "type": "string"
+        },
+        {
+          "const": "network",
+          "description": "No usable response: DNS, TCP, or a timeout.",
+          "type": "string"
+        },
+        {
+          "const": "scanner",
+          "description": "A failure inside the scanner or an unclassified error.",
+          "type": "string"
+        }
+      ]
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "server_hellos_hex": {
+          "description": "Hex of each plaintext ServerHello / HelloRetryRequest message received.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "server_hellos_hex"
+      ],
+      "type": "object"
+    },
+    "GroupReport": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "description": "\"classical\", \"hybrid\", \"pure_pq\", or \"unregistered\".",
+          "type": "string"
+        },
+        "name": {
+          "description": "IANA name, or `unknown(0x....)` if not in the registry table.",
+          "type": "string"
+        },
+        "pq_kem": {
+          "description": "Post-quantum KEM component, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reference": {
+          "description": "Document the registry entry cites.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Registry status: \"standard\", \"draft\", \"obsolete\", or \"unregistered\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "name",
+        "kind",
+        "status"
+      ],
+      "type": "object"
+    },
+    "HttpRedirectInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "detected": {
+          "description": "At least one redirect was followed.",
+          "type": "boolean"
+        },
+        "final_destination": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "final_destination_certificate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CertificateReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Leaf certificate of the final destination, when it is a different origin.\nNever substituted for the target's certificate."
+        },
+        "redirect_chain": {
+          "description": "URLs requested, in order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "redirect_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status_code": {
+          "description": "HTTP status of the first response.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "detected",
+        "redirect_chain",
+        "redirect_count"
+      ],
+      "type": "object"
+    },
+    "Inference": {
+      "additionalProperties": false,
+      "description": "A statement the scanner inferred rather than observed.",
+      "properties": {
+        "provenance": {
+          "description": "Always \"inferred\".",
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provenance",
+        "statement"
+      ],
+      "type": "object"
+    },
+    "Outcome": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScanError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the scan did not complete. Absent when status is \"completed\"."
+        },
+        "status": {
+          "description": "\"completed\" when the handshake finished, otherwise \"failed\".",
+          "type": "string"
+        },
+        "trust_store": {
+          "description": "Trust store the chain was validated against: \"webpki-roots\" or \"custom\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "trust_store"
+      ],
+      "type": "object"
+    },
+    "PqcSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "certificate_chain": {
+          "$ref": "#/$defs/Derived",
+          "description": "\"post_quantum\" (every certificate PQ or composite), \"mixed\", \"classical\",\nor \"unknown\"."
+        },
+        "handshake_signature": {
+          "$ref": "#/$defs/Derived",
+          "description": "\"post_quantum\", \"classical\", or \"unknown\"."
+        },
+        "key_exchange": {
+          "$ref": "#/$defs/Derived",
+          "description": "\"hybrid\", \"pure_pq\", \"classical\", or \"unknown\"."
+        }
+      },
+      "required": [
+        "key_exchange",
+        "certificate_chain",
+        "handshake_signature"
+      ],
+      "type": "object"
+    },
+    "ProfileInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "offered_groups": {
+          "description": "Key-exchange groups our ClientHello offered, in preference order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "offered_tls_versions": {
+          "description": "TLS versions our ClientHello offered.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "offered_groups",
+        "offered_tls_versions"
+      ],
+      "type": "object"
+    },
+    "ScanError": {
+      "additionalProperties": false,
+      "description": "Structured error information for a scan (stable JSON schema).",
+      "properties": {
+        "alert": {
+          "description": "Fatal TLS alert received from the server, if any (observed)",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category": {
+          "$ref": "#/$defs/ErrorCategory",
+          "description": "Whether the outcome describes the server, the network, or the scanner"
+        },
+        "code": {
+          "description": "Stable, machine-readable error code",
+          "type": "string"
+        },
+        "details": {
+          "description": "Context: ports tried, profile, offered groups",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interpretation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Likely cause, when the scanner can only infer it"
+        },
+        "message": {
+          "description": "Human-readable error message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "category"
+      ],
+      "type": "object"
+    },
+    "SignatureSchemeReport": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "post_quantum": {
+          "description": "Null when the scheme is not in the registry table.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "name"
+      ],
+      "type": "object"
+    },
+    "TargetInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "description": "Peer address of the handshake connection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input": {
+          "description": "The target exactly as given.",
+          "type": "string"
+        },
+        "port": {
+          "description": "Port the handshake used (null if no connection was made).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "server_name": {
+          "description": "Name sent as SNI and validated against the certificate.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "input"
+      ],
+      "type": "object"
+    },
+    "TlsInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "cipher_suite": {
+          "$ref": "#/$defs/CodeName"
+        },
+        "handshake_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hello_retry_request": {
+          "description": "The server answered the first ClientHello with a HelloRetryRequest.",
+          "type": "boolean"
+        },
+        "key_exchange": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupReport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "server_signature_scheme": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SignatureSchemeReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The server's handshake signature scheme (TLS 1.3 CertificateVerify,\nTLS 1.2 ServerKeyExchange)."
+        },
+        "version": {
+          "description": "\"1.3\" or \"1.2\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "cipher_suite",
+        "hello_retry_request",
+        "handshake_ms"
+      ],
+      "type": "object"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "tls_stack": {
+          "description": "TLS library and crypto provider used for the handshake.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "tls_stack"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "certificate_chain": {
+      "description": "Certificates as sent by the server, leaf first. Empty unless the\nhandshake completed (a chain that failed validation is not reported).",
+      "items": {
+        "$ref": "#/$defs/CertificateReport"
+      },
+      "type": "array"
+    },
+    "duration_ms": {
+      "description": "Wall-clock time for this target, all connections included.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "evidence": {
+      "$ref": "#/$defs/Evidence"
+    },
+    "http_redirect": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HttpRedirectInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Present only when redirect following was requested."
+    },
+    "not_implemented": {
+      "description": "Aspects this version does not observe.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "outcome": {
+      "$ref": "#/$defs/Outcome"
+    },
+    "pqc": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PqcSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Present when the handshake completed."
+    },
+    "profile": {
+      "$ref": "#/$defs/ProfileInfo"
+    },
+    "schema_version": {
+      "description": "Always \"0\" for this format.",
+      "type": "string"
+    },
+    "started_at": {
+      "description": "RFC 3339 UTC time the scan of this target started.",
+      "type": "string"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetInfo"
+    },
+    "tls": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TlsInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Present when the handshake completed."
+    },
+    "tool": {
+      "$ref": "#/$defs/Tool"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool",
+    "target",
+    "profile",
+    "started_at",
+    "duration_ms",
+    "outcome",
+    "certificate_chain",
+    "not_implemented",
+    "evidence"
+  ],
+  "title": "ScanReport",
+  "type": "object"
+}

@@ -1,0 +1,62 @@
+{
+  "certificate_chain": [],
+  "duration_ms": "<volatile>",
+  "evidence": {
+    "server_hellos_hex": []
+  },
+  "http_redirect": null,
+  "not_implemented": [
+    "quic",
+    "group_enumeration",
+    "server_group_preference",
+    "downgrade_behaviour",
+    "large_client_hello_tolerance",
+    "alpn",
+    "ocsp_stapling",
+    "session_resumption",
+    "early_data",
+    "certificate_transparency",
+    "revocation"
+  ],
+  "outcome": {
+    "error": {
+      "alert": "HandshakeFailure",
+      "category": "server_result",
+      "code": "handshake_rejected",
+      "details": "<volatile>",
+      "interpretation": {
+        "provenance": "inferred",
+        "statement": "The server aborted after our ClientHello offering [MLKEM1024, MLKEM768]. A common cause is that it supports none of these key-exchange groups, but this alert is also used for other negotiation failures (cipher suites, signature algorithms, versions). Per-group probing, which would confirm the cause, is not implemented."
+      },
+      "message": "<volatile>"
+    },
+    "status": "failed",
+    "trust_store": "custom"
+  },
+  "pqc": null,
+  "profile": {
+    "name": "mlkem",
+    "offered_groups": [
+      "MLKEM1024",
+      "MLKEM768"
+    ],
+    "offered_tls_versions": [
+      "1.3"
+    ]
+  },
+  "schema_version": "0",
+  "started_at": "<volatile>",
+  "target": {
+    "address": "<volatile>",
+    "host": "localhost",
+    "input": "<volatile>",
+    "port": "<volatile>",
+    "server_name": "localhost"
+  },
+  "tls": null,
+  "tool": {
+    "name": "quantaseek",
+    "tls_stack": "rustls 0.23 / aws-lc-rs",
+    "version": "<volatile>"
+  }
+}

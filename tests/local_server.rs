@@ -2,6 +2,7 @@
 
 mod support;
 
+use quanta_seek::report::ScanReport;
 use quanta_seek::types::HandshakeConfig;
 use quanta_seek::{HandshakeEngine, HandshakeProfile};
 use support::*;
@@ -10,7 +11,6 @@ fn config_trusting(pki: &TestPki) -> HandshakeConfig {
     HandshakeConfig {
         trust_anchors: Some(pki.roots()),
         timeout_ms: 2000,
-        ..HandshakeConfig::default()
     }
 }
 
@@ -29,11 +29,23 @@ async fn handshake_engine_reports_negotiated_hybrid_group() {
     let stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
     let result = engine.perform_handshake(stream, "localhost").await.unwrap();
 
-    assert_eq!(result.tls_version, "1.3");
-    assert_eq!(result.key_exchange, vec!["X25519MLKEM768".to_string()]);
+    assert_eq!(result.tls_version.as_deref(), Some("1.3"));
+    assert_eq!(result.negotiated_group, Some(4588));
     let accepted = server.accepted_at_least(1).await;
     assert_eq!(accepted[0].group, Some(4588));
     assert_eq!(accepted[0].sni.as_deref(), Some("localhost"));
+}
+
+fn group(report: &ScanReport) -> String {
+    report
+        .tls
+        .as_ref()
+        .unwrap()
+        .key_exchange
+        .as_ref()
+        .unwrap()
+        .name
+        .clone()
 }
 
 fn scan_options(pki: &TestPki) -> quanta_seek::scan::ScanOptions {
@@ -58,11 +70,10 @@ async fn scans_the_port_named_in_the_target() {
     let target = format!("localhost:{}", server.port());
     let result =
         quanta_seek::scan::scan_target(&scan_options(&pki), &target, &HandshakeProfile::Default)
-            .await
-            .unwrap();
+            .await;
 
-    assert!(result.handshake_complete, "error: {:?}", result.error);
-    assert_eq!(result.key_exchange, vec!["X25519MLKEM768".to_string()]);
+    assert!(result.completed(), "error: {:?}", result.outcome.error);
+    assert_eq!(group(&result), "X25519MLKEM768");
     assert!(!server.accepted_at_least(1).await.is_empty());
 }
 
@@ -128,10 +139,8 @@ async fn sni_override_is_sent_and_validated() {
         sni: Some("qs.test".into()),
         ..scan_options(&pki)
     };
-    let result = quanta_seek::scan::scan_target(&opts, &target, &profile)
-        .await
-        .unwrap();
-    assert!(result.handshake_complete, "error: {:?}", result.error);
+    let result = quanta_seek::scan::scan_target(&opts, &target, &profile).await;
+    assert!(result.completed(), "error: {:?}", result.outcome.error);
     assert_eq!(
         server.accepted_at_least(1).await[0].sni.as_deref(),
         Some("qs.test")
@@ -139,12 +148,10 @@ async fn sni_override_is_sent_and_validated() {
 
     // Without the override the name is the IP literal, which the certificate
     // does not cover, so validation fails and no handshake completes.
-    let result = quanta_seek::scan::scan_target(&scan_options(&pki), &target, &profile)
-        .await
-        .unwrap();
-    assert!(!result.handshake_complete);
+    let result = quanta_seek::scan::scan_target(&scan_options(&pki), &target, &profile).await;
+    assert!(!result.completed());
     // A handshake that fails after TCP connects must still report an error.
-    assert!(result.error.is_some());
+    assert!(result.outcome.error.is_some());
 }
 
 async fn redirect_pair(pki: &TestPki) -> (TestServer, TestServer) {
@@ -176,11 +183,10 @@ async fn redirects_are_not_followed_by_default() {
     let target = format!("127.0.0.1:{}", origin.port());
     let result =
         quanta_seek::scan::scan_target(&scan_options(&pki), &target, &HandshakeProfile::Default)
-            .await
-            .unwrap();
-    assert!(result.handshake_complete, "error: {:?}", result.error);
+            .await;
+    assert!(result.completed(), "error: {:?}", result.outcome.error);
     assert!(result.http_redirect.is_none());
-    assert_eq!(result.certificate.unwrap().subject, "redirect-origin");
+    assert_eq!(result.certificate_chain[0].subject, "CN=redirect-origin");
     assert_eq!(destination.connections(), 0);
 }
 
@@ -194,22 +200,17 @@ async fn followed_redirect_never_replaces_target_certificate() {
         follow_redirects: true,
         ..scan_options(&pki)
     };
-    let result = quanta_seek::scan::scan_target(&opts, &target, &HandshakeProfile::Default)
-        .await
-        .unwrap();
-    assert!(result.handshake_complete, "error: {:?}", result.error);
+    let result = quanta_seek::scan::scan_target(&opts, &target, &HandshakeProfile::Default).await;
+    assert!(result.completed(), "error: {:?}", result.outcome.error);
     // The target's own certificate is reported...
-    assert_eq!(
-        result.certificate.as_ref().unwrap().subject,
-        "redirect-origin"
-    );
+    assert_eq!(result.certificate_chain[0].subject, "CN=redirect-origin");
     // ...and the destination's certificate is reported separately.
     let redirect = result.http_redirect.expect("redirect info");
     assert!(redirect.detected);
     assert_eq!(redirect.status_code, Some(301));
     assert_eq!(
         redirect.final_destination_certificate.unwrap().subject,
-        "redirect-destination"
+        "CN=redirect-destination"
     );
 }
 
@@ -235,19 +236,39 @@ async fn hostname_substrings_do_not_change_behaviour() {
             &format!("{name}:443"),
             &HandshakeProfile::Default,
         )
-        .await
-        .unwrap();
-        assert!(result.handshake_complete, "{name}: {:?}", result.error);
-        assert_eq!(result.connection_type.as_deref(), Some("tls"));
-        assert_eq!(
-            result.fallback_strategy_used.as_deref(),
-            Some("tcp_tls_only")
-        );
+        .await;
+        assert!(result.completed(), "{name}: {:?}", result.outcome.error);
+        assert!(result.not_implemented.contains(&"quic".to_string()));
         assert_eq!(
             server.accepted_at_least(1).await[0].sni.as_deref(),
             Some(name)
         );
-        // Reachability probe plus one handshake: no retries, no extra ports.
-        assert_eq!(server.connections(), 2);
+        // One connection, one handshake: no retries, no extra ports.
+        assert_eq!(server.connections(), 1);
     }
+}
+
+#[tokio::test]
+async fn large_server_flight_is_read_completely() {
+    // rustls consumes at most 4096 bytes per read_tls call; a server flight
+    // larger than that arriving in one socket read must not be truncated.
+    init();
+    let pki = TestPki::new("large");
+    let names: Vec<String> = (0..400)
+        .map(|i| format!("host-{i:03}.large.test"))
+        .collect();
+    let mut sans: Vec<&str> = vec!["localhost"];
+    sans.extend(names.iter().map(String::as_str));
+    let server = spawn(ServerSpec {
+        identity: pki.leaf("localhost", &sans),
+        groups: vec![X25519MLKEM768, X25519],
+        http_response: None,
+    })
+    .await;
+    let target = format!("localhost:{}", server.port());
+    let result =
+        quanta_seek::scan::scan_target(&scan_options(&pki), &target, &HandshakeProfile::Default)
+            .await;
+    assert!(result.completed(), "error: {:?}", result.outcome.error);
+    assert_eq!(result.certificate_chain[0].san_dns.len(), 401);
 }

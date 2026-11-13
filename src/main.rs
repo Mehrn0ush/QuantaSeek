@@ -1,21 +1,25 @@
 use anyhow::Result;
 use clap::Parser;
-use quanta_seek::scan::{scan_multiple_targets, scan_target, ScanOptions};
+use quanta_seek::scan::{scan_target, ScanOptions};
 use quanta_seek::{
-    output::output_results,
-    types::{HandshakeConfig, OutputFormat, ScanResult},
+    types::{HandshakeConfig, OutputFormat},
     HandshakeProfile,
 };
-use std::time::{Duration, Instant};
+use std::io::Write;
+use std::time::Duration;
 
 /// QuantaSeek: report the TLS key exchange and certificate algorithms an
 /// endpoint actually negotiates, with a focus on post-quantum readiness.
 #[derive(Debug, Parser)]
 #[command(name = "quantaseek", version, about, long_about = None)]
 struct Cli {
-    /// Target hostnames, space- or comma-separated (e.g. example.com google.com)
-    #[arg(required = true, num_args = 1.., value_delimiter = ',')]
+    /// Targets: host, host:port, [ipv6]:port; space- or comma-separated
+    #[arg(required_unless_present = "print_schema", num_args = 1.., value_delimiter = ',')]
     targets: Vec<String>,
+
+    /// Print the JSON Schema of the output and exit
+    #[arg(long)]
+    print_schema: bool,
 
     /// Key-exchange groups the ClientHello offers
     #[arg(short, long, value_enum, default_value_t = HandshakeProfile::Default)]
@@ -77,6 +81,13 @@ fn init_logging(quiet: bool, verbose: u8) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.print_schema {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&quanta_seek::report::json_schema())?
+        );
+        return Ok(());
+    }
     init_logging(cli.quiet, cli.verbose);
 
     // rustls 0.23 needs a process-wide crypto provider; aws-lc-rs provides
@@ -110,81 +121,22 @@ async fn main() -> Result<()> {
         profile.offered_group_names().join(", ")
     );
 
-    let scan_start = Instant::now();
-
-    if targets.len() == 1 {
-        let result = scan_target(&opts, &targets[0], &profile).await?;
-        output_results(&result, format);
-    } else {
-        let results = scan_multiple_targets(&opts, &targets, profile).await?;
-        output_batch_results(&results, &format, scan_start.elapsed());
+    // One result per target, written as soon as it is ready.
+    let stdout = std::io::stdout();
+    for target in &targets {
+        let report = scan_target(&opts, target, &profile).await;
+        let mut out = stdout.lock();
+        match format {
+            OutputFormat::Json => {
+                serde_json::to_writer(&mut out, &report)?;
+                writeln!(out)?;
+            }
+            OutputFormat::Text => {
+                writeln!(out, "{}", report.render_text())?;
+            }
+        }
+        out.flush()?;
     }
 
     Ok(())
 }
-
-fn output_batch_results(
-    results: &[ScanResult],
-    format: &OutputFormat,
-    total_duration: std::time::Duration,
-) {
-    match format {
-        OutputFormat::Json => {
-            let batch_output = serde_json::json!({
-                "batch_scan": {
-                    "total_targets": results.len(),
-                    "successful_scans": results.iter().filter(|r| r.handshake_complete).count(),
-                    "failed_scans": results.iter().filter(|r| !r.handshake_complete).count(),
-                    "total_duration_ms": total_duration.as_millis(),
-                    "results": results
-                }
-            });
-            match serde_json::to_string_pretty(&batch_output) {
-                Ok(json) => println!("{}", json),
-                Err(e) => {
-                    tracing::error!("Failed to serialize batch results: {}", e);
-                    // Fallback to compact JSON
-                    if let Ok(json) = serde_json::to_string(&batch_output) {
-                        println!("{}", json);
-                    } else {
-                        tracing::error!("Failed to serialize batch results in compact format");
-                    }
-                }
-            }
-        }
-        OutputFormat::Text => {
-            println!("\n=== BATCH SCAN SUMMARY ===");
-            println!("Total targets: {}", results.len());
-            println!(
-                "Successful scans: {}",
-                results.iter().filter(|r| r.handshake_complete).count()
-            );
-            println!(
-                "Failed scans: {}",
-                results.iter().filter(|r| !r.handshake_complete).count()
-            );
-            println!("Total duration: {}ms", total_duration.as_millis());
-            println!("\n=== INDIVIDUAL RESULTS ===");
-
-            for result in results {
-                println!("\n--- {} ---", result.target);
-                if result.handshake_complete {
-                    println!("Status: ✅ Success");
-                    println!("TLS Version: {}", result.tls_version);
-                    println!("PQC Detected: {}", result.pqc_detected);
-                    println!("Security Score: {}/100", result.security_score.overall);
-                } else {
-                    println!("Status: ❌ Failed");
-                    if let Some(warnings) = result.security_warnings.first() {
-                        println!("Error: {}", warnings.message);
-                    }
-                }
-            }
-        }
-        OutputFormat::Csv => {
-            tracing::error!("CSV output is not implemented");
-        }
-    }
-}
-
-// Note: parse_target function is not used in the current implementation

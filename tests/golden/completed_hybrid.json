@@ -1,0 +1,120 @@
+{
+  "certificate_chain": [
+    {
+      "issuer": "CN=schema Test CA",
+      "not_after": "<volatile>",
+      "not_before": "<volatile>",
+      "position": 0,
+      "public_key": {
+        "family": "classical",
+        "name": "ECDSA",
+        "oid": "1.2.840.10045.2.1",
+        "size_bits": 256
+      },
+      "san_dns": [
+        "localhost"
+      ],
+      "san_ip": [],
+      "serial_hex": "<volatile>",
+      "sha256": "<volatile>",
+      "signature": {
+        "family": "classical",
+        "name": "ECDSA-SHA256",
+        "oid": "1.2.840.10045.4.3.2",
+        "size_bits": null
+      },
+      "subject": "CN=localhost"
+    }
+  ],
+  "duration_ms": "<volatile>",
+  "evidence": {
+    "server_hellos_hex": [
+      "<volatile>"
+    ]
+  },
+  "http_redirect": null,
+  "not_implemented": [
+    "quic",
+    "group_enumeration",
+    "server_group_preference",
+    "downgrade_behaviour",
+    "large_client_hello_tolerance",
+    "alpn",
+    "ocsp_stapling",
+    "session_resumption",
+    "early_data",
+    "certificate_transparency",
+    "revocation"
+  ],
+  "outcome": {
+    "error": null,
+    "status": "completed",
+    "trust_store": "custom"
+  },
+  "pqc": {
+    "certificate_chain": {
+      "basis": "0 of 1 certificate signature algorithms are ML-DSA, SLH-DSA or composite ML-DSA OIDs",
+      "provenance": "derived",
+      "value": "classical"
+    },
+    "handshake_signature": {
+      "basis": "server signature scheme ecdsa_secp256r1_sha256 is classical",
+      "provenance": "derived",
+      "value": "classical"
+    },
+    "key_exchange": {
+      "basis": "negotiated group X25519MLKEM768 (0x11ec) is hybrid in the IANA TLS Supported Groups registry",
+      "provenance": "derived",
+      "value": "hybrid"
+    }
+  },
+  "profile": {
+    "name": "default",
+    "offered_groups": [
+      "X25519MLKEM768",
+      "x25519",
+      "secp256r1",
+      "secp384r1"
+    ],
+    "offered_tls_versions": [
+      "1.3",
+      "1.2"
+    ]
+  },
+  "schema_version": "0",
+  "started_at": "<volatile>",
+  "target": {
+    "address": "<volatile>",
+    "host": "localhost",
+    "input": "<volatile>",
+    "port": "<volatile>",
+    "server_name": "localhost"
+  },
+  "tls": {
+    "cipher_suite": {
+      "code": 4866,
+      "name": "TLS_AES_256_GCM_SHA384"
+    },
+    "handshake_ms": "<volatile>",
+    "hello_retry_request": false,
+    "key_exchange": {
+      "code": 4588,
+      "kind": "hybrid",
+      "name": "X25519MLKEM768",
+      "pq_kem": "ML-KEM-768",
+      "reference": "RFC 10024",
+      "status": "standard"
+    },
+    "server_signature_scheme": {
+      "code": 1027,
+      "name": "ecdsa_secp256r1_sha256",
+      "post_quantum": false
+    },
+    "version": "1.3"
+  },
+  "tool": {
+    "name": "quantaseek",
+    "tls_stack": "rustls 0.23 / aws-lc-rs",
+    "version": "<volatile>"
+  }
+}

@@ -3,8 +3,7 @@
 //! The redirect chain and the final destination's certificate are reported
 //! in their own field. They never replace the scanned target's certificate.
 
-use crate::cert::CertificateParser;
-use crate::types::{CertificateInfo, HttpRedirectInfo};
+use crate::report::{certificate_report, CertificateReport, HttpRedirectInfo};
 use anyhow::{anyhow, Result};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
@@ -130,7 +129,7 @@ pub async fn follow_redirects(start: &str, opts: &RedirectOptions) -> Result<Htt
 }
 
 /// Leaf certificate presented by the HTTPS origin of `url`.
-async fn certificate_for_url(url: &str, opts: &RedirectOptions) -> Result<CertificateInfo> {
+async fn certificate_for_url(url: &str, opts: &RedirectOptions) -> Result<CertificateReport> {
     let parsed = url::Url::parse(url)?;
     if parsed.scheme() != "https" {
         return Err(anyhow!("not an https URL: {}", url));
@@ -159,5 +158,5 @@ async fn certificate_for_url(url: &str, opts: &RedirectOptions) -> Result<Certif
         .peer_certificates()
         .and_then(|c| c.first())
         .ok_or_else(|| anyhow!("no certificate presented"))?;
-    CertificateParser::new().parse_certificate(cert.as_ref())
+    certificate_report(0, cert.as_ref()).map_err(|e| anyhow!(e))
 }

@@ -2,12 +2,29 @@
 
 mod support;
 
+use quanta_seek::report::ScanReport;
 use quanta_seek::scan::{scan_target, ScanOptions};
-use quanta_seek::types::{ErrorCategory, HandshakeConfig, ScanResult};
+use quanta_seek::types::{ErrorCategory, HandshakeConfig};
 use quanta_seek::HandshakeProfile;
 use rustls::crypto::SupportedKxGroup;
 use std::time::Duration;
 use support::*;
+
+fn group(report: &ScanReport) -> String {
+    report
+        .tls
+        .as_ref()
+        .unwrap()
+        .key_exchange
+        .as_ref()
+        .unwrap()
+        .name
+        .clone()
+}
+
+fn pqc_kex(report: &ScanReport) -> String {
+    report.pqc.as_ref().unwrap().key_exchange.value.clone()
+}
 
 fn options(pki: &TestPki) -> ScanOptions {
     ScanOptions {
@@ -15,7 +32,6 @@ fn options(pki: &TestPki) -> ScanOptions {
         handshake: HandshakeConfig {
             trust_anchors: Some(pki.roots()),
             timeout_ms: 1500,
-            ..HandshakeConfig::default()
         },
         ..ScanOptions::default()
     }
@@ -24,7 +40,7 @@ fn options(pki: &TestPki) -> ScanOptions {
 async fn scan_server(
     groups: Vec<&'static dyn SupportedKxGroup>,
     profile: HandshakeProfile,
-) -> (ScanResult, TestServer) {
+) -> (ScanReport, TestServer) {
     init();
     let pki = TestPki::new("profiles");
     let server = spawn(ServerSpec {
@@ -34,9 +50,7 @@ async fn scan_server(
     })
     .await;
     let target = format!("localhost:{}", server.port());
-    let result = scan_target(&options(&pki), &target, &profile)
-        .await
-        .unwrap();
+    let result = scan_target(&options(&pki), &target, &profile).await;
     (result, server)
 }
 
@@ -44,41 +58,46 @@ async fn scan_server(
 async fn classical_profile_offers_no_pq_group() {
     let (result, server) =
         scan_server(vec![X25519MLKEM768, X25519], HandshakeProfile::Classical).await;
-    assert!(result.handshake_complete, "{:?}", result.error);
-    assert_eq!(result.key_exchange, vec!["x25519".to_string()]);
-    assert!(!result.pqc_detected);
+    assert!(result.completed(), "{:?}", result.outcome.error);
+    assert_eq!(group(&result), "x25519");
+    assert_eq!(pqc_kex(&result), "classical");
     assert_eq!(server.accepted_at_least(1).await[0].group, Some(0x001d));
 }
 
 #[tokio::test]
 async fn default_profile_prefers_x25519mlkem768() {
     let (result, _) = scan_server(vec![X25519MLKEM768, X25519], HandshakeProfile::Default).await;
-    assert_eq!(result.key_exchange, vec!["X25519MLKEM768".to_string()]);
-    assert!(result.pqc_detected);
+    assert_eq!(group(&result), "X25519MLKEM768");
+    assert_eq!(pqc_kex(&result), "hybrid");
 }
 
 #[tokio::test]
 async fn hybrid_profile_reaches_secp256r1mlkem768() {
     let (result, server) = scan_server(vec![SECP256R1MLKEM768], HandshakeProfile::Hybrid).await;
-    assert!(result.handshake_complete, "{:?}", result.error);
-    assert_eq!(result.key_exchange, vec!["SecP256r1MLKEM768".to_string()]);
+    assert!(result.completed(), "{:?}", result.outcome.error);
+    assert_eq!(group(&result), "SecP256r1MLKEM768");
+    // The first key share was X25519MLKEM768, which this server lacks.
+    assert!(result.tls.as_ref().unwrap().hello_retry_request);
+    assert_eq!(result.evidence.server_hellos_hex.len(), 2);
     assert_eq!(server.accepted_at_least(1).await[0].group, Some(4587));
 }
 
 #[tokio::test]
 async fn mlkem_profile_negotiates_pure_mlkem() {
     let (result, _) = scan_server(vec![MLKEM1024, X25519], HandshakeProfile::Mlkem).await;
-    assert_eq!(result.key_exchange, vec!["MLKEM1024".to_string()]);
+    assert_eq!(group(&result), "MLKEM1024");
     let (result, _) = scan_server(vec![MLKEM768], HandshakeProfile::Mlkem).await;
-    assert_eq!(result.key_exchange, vec!["MLKEM768".to_string()]);
-    assert_eq!(result.tls_version, "1.3");
+    assert_eq!(group(&result), "MLKEM768");
+    assert_eq!(result.tls.as_ref().unwrap().version, "1.3");
+    assert_eq!(pqc_kex(&result), "pure_pq");
 }
 
 #[tokio::test]
 async fn profile_with_no_shared_group_is_a_server_result() {
     let (result, _) = scan_server(vec![X25519, SECP256R1], HandshakeProfile::Mlkem).await;
-    assert!(!result.handshake_complete);
-    let error = result.error.expect("outcome");
+    assert!(!result.completed());
+    assert!(result.tls.is_none() && result.certificate_chain.is_empty());
+    let error = result.outcome.error.expect("outcome");
     assert_eq!(error.code, "handshake_rejected");
     assert_eq!(error.category, ErrorCategory::ServerResult);
     assert_eq!(error.alert.as_deref(), Some("HandshakeFailure"));
@@ -99,10 +118,8 @@ async fn untrusted_certificate_is_a_server_result() {
     })
     .await;
     let target = format!("localhost:{}", server.port());
-    let result = scan_target(&options(&other), &target, &HandshakeProfile::Default)
-        .await
-        .unwrap();
-    let error = result.error.expect("outcome");
+    let result = scan_target(&options(&other), &target, &HandshakeProfile::Default).await;
+    let error = result.outcome.error.expect("outcome");
     assert_eq!(error.code, "certificate_rejected");
     assert_eq!(error.category, ErrorCategory::ServerResult);
 }
@@ -113,10 +130,8 @@ async fn silent_server_is_a_timeout_not_a_server_result() {
     let pki = TestPki::new("silent");
     let addr = spawn_silent().await;
     let target = format!("127.0.0.1:{}", addr.port());
-    let result = scan_target(&options(&pki), &target, &HandshakeProfile::Default)
-        .await
-        .unwrap();
-    let error = result.error.expect("outcome");
+    let result = scan_target(&options(&pki), &target, &HandshakeProfile::Default).await;
+    let error = result.outcome.error.expect("outcome");
     assert_eq!(error.code, "handshake_timeout");
     assert_eq!(error.category, ErrorCategory::Network);
 }
@@ -126,10 +141,8 @@ async fn refused_connection_is_a_network_failure() {
     init();
     let pki = TestPki::new("refused");
     let target = format!("127.0.0.1:{}", closed_port().await);
-    let result = scan_target(&options(&pki), &target, &HandshakeProfile::Default)
-        .await
-        .unwrap();
-    let error = result.error.expect("outcome");
+    let result = scan_target(&options(&pki), &target, &HandshakeProfile::Default).await;
+    let error = result.outcome.error.expect("outcome");
     assert_eq!(error.code, "connection_refused");
     assert_eq!(error.category, ErrorCategory::Network);
 }
