@@ -62,20 +62,44 @@ pub fn evaluate(id: &str, report: &ScanReport) -> Outcome {
             let Some(probe) = &report.probe else {
                 return ne(NO_PROBE);
             };
-            let Some(d) = &probe.downgrade else {
-                return ne("needs both an accepted post-quantum and an accepted classical group");
+            if probe.downgrade.is_empty() {
+                return ne("needs an accepted post-quantum group and an accepted classical group");
+            }
+            // Every case names exactly what was offered and which share was sent.
+            let case_evidence = |i: usize, d: &crate::report::DowngradeProbe| {
+                vec![
+                    Evidence::new(
+                        format!("probe.downgrade[{i}].offered"),
+                        d.offered.join(", "),
+                    ),
+                    Evidence::new(format!("probe.downgrade[{i}].key_share"), &d.key_share),
+                    Evidence::new(format!("probe.downgrade[{i}].behaviour"), &d.behaviour),
+                ]
             };
-            match d.behaviour.as_str() {
-                "accepted_classical_share" => Finding(vec![
-                    Evidence::new("probe.downgrade.behaviour", &d.behaviour),
-                    Evidence::new("probe.downgrade.pq_group", &d.pq_group),
-                    Evidence::new("probe.downgrade.classical_group", &d.classical_group),
-                ]),
-                "retried_for_pq_group" => Pass,
-                _ => NotEvaluated(format!(
-                    "downgrade probe was inconclusive (result {})",
-                    d.result
-                )),
+            let accepted: Vec<Evidence> = probe
+                .downgrade
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| d.behaviour == "accepted_classical_share")
+                .flat_map(|(i, d)| case_evidence(i, d))
+                .collect();
+            if !accepted.is_empty() {
+                return Finding(accepted);
+            }
+            // A pass needs every planned case to have been probed and retried.
+            let unresolved: Vec<String> = probe
+                .downgrade
+                .iter()
+                .filter(|d| d.behaviour != "retried_for_pq_group")
+                .map(|d| format!("{} share: {}", d.key_share, d.behaviour))
+                .collect();
+            if unresolved.is_empty() {
+                Pass
+            } else {
+                NotEvaluated(format!(
+                    "downgrade case(s) not resolved: {}",
+                    unresolved.join("; ")
+                ))
             }
         }
 
@@ -116,6 +140,7 @@ pub fn evaluate(id: &str, report: &ScanReport) -> Outcome {
                 return Pass;
             }
             let mut evidence = vec![
+                Evidence::new("probe.client_hello_tolerance.group", &t.group),
                 Evidence::new("probe.client_hello_tolerance.baseline", &t.baseline),
                 Evidence::new("probe.client_hello_tolerance.padded", &t.padded),
                 Evidence::new(
@@ -343,7 +368,7 @@ mod tests {
             groups: vec![],
             preference: vec![],
             hello_retry: vec![],
-            downgrade: None,
+            downgrade: vec![],
             client_hello_tolerance: None,
         }
     }
@@ -378,23 +403,50 @@ mod tests {
     fn qs_kex_002() {
         let mut r = hybrid();
         assert!(matches!(evaluate("QS-KEX-002", &r), NotEvaluated(_)));
-        let mut p = probe(&["x25519", "X25519MLKEM768"]);
-        let mut d = DowngradeProbe {
-            pq_group: "X25519MLKEM768".into(),
-            classical_group: "x25519".into(),
-            behaviour: "accepted_classical_share".into(),
-            result: "server_hello".into(),
+        let mut p = probe(&["x25519", "secp256r1", "X25519MLKEM768"]);
+        let case = |share: &str, behaviour: &str| DowngradeProbe {
+            offered: vec!["X25519MLKEM768".into(), share.into()],
+            key_share: share.into(),
+            behaviour: behaviour.into(),
+            result: String::new(),
             alert: None,
-            reply_group: Some("x25519".into()),
+            reply_group: None,
             detail: None,
         };
-        p.downgrade = Some(d.clone());
+        // x25519 case retried, secp256r1 case accepted: a finding naming the
+        // secp256r1 case exactly.
+        p.downgrade = vec![
+            case("x25519", "retried_for_pq_group"),
+            case("secp256r1", "accepted_classical_share"),
+        ];
         r.probe = Some(p.clone());
-        assert!(is_finding(&evaluate("QS-KEX-002", &r)));
-        d.behaviour = "retried_for_pq_group".into();
-        p.downgrade = Some(d);
-        r.probe = Some(p);
+        match evaluate("QS-KEX-002", &r) {
+            Finding(e) => {
+                assert!(e.contains(&Evidence::new("probe.downgrade[1].key_share", "secp256r1")));
+                assert!(e.contains(&Evidence::new(
+                    "probe.downgrade[1].offered",
+                    "X25519MLKEM768, secp256r1"
+                )));
+                assert!(e.iter().all(|x| !x.field.starts_with("probe.downgrade[0]")));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Both retried: pass.
+        p.downgrade = vec![
+            case("x25519", "retried_for_pq_group"),
+            case("secp256r1", "retried_for_pq_group"),
+        ];
+        r.probe = Some(p.clone());
         assert_eq!(evaluate("QS-KEX-002", &r), Pass);
+        // One retried, one skipped for budget: not a pass.
+        p.downgrade = vec![
+            case("x25519", "retried_for_pq_group"),
+            case("secp256r1", "not_probed"),
+        ];
+        r.probe = Some(p);
+        assert!(
+            matches!(evaluate("QS-KEX-002", &r), NotEvaluated(ref m) if m.contains("secp256r1"))
+        );
     }
 
     #[test]
