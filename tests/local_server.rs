@@ -120,6 +120,13 @@ fn target_parsing() {
     assert!(Target::parse("example.com:http").is_err());
     assert!(Target::parse(":443").is_err());
     assert!(Target::parse("[::1").is_err());
+    // Found by fuzzing (fuzz/fuzz_targets/target_parse.rs): an empty
+    // bracketed host was accepted.
+    assert!(Target::parse("[]").is_err());
+    assert!(Target::parse("[]:443").is_err());
+    // Brackets and bare multi-colon forms must hold an IPv6 literal.
+    assert!(Target::parse("[example.com]:443").is_err());
+    assert!(Target::parse("a:b:c").is_err());
 }
 
 #[tokio::test]

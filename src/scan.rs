@@ -43,6 +43,11 @@ impl Target {
                     format!("unexpected text after ']' in '{input}'")
                 })?)?),
             };
+            if host.parse::<std::net::Ipv6Addr>().is_err() {
+                return Err(format!(
+                    "'[{host}]' in target '{input}' is not an IPv6 address"
+                ));
+            }
             return Ok(Self {
                 host: host.to_string(),
                 port,
@@ -64,10 +69,14 @@ impl Target {
                 })
             }
             // Bare IPv6 literal without brackets: no port.
-            _ => Ok(Self {
+            _ if input.parse::<std::net::Ipv6Addr>().is_ok() => Ok(Self {
                 host: input.to_string(),
                 port: None,
             }),
+            _ => Err(format!(
+                "target '{input}' has several ':' but is not an IPv6 address; \
+                 use [address]:port"
+            )),
         }
     }
 }
