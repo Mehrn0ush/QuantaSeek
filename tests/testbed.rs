@@ -92,6 +92,15 @@ const GO_X25519MLKEM768: Server = Server {
     port: 44321,
 };
 
+const HYBRID_AND_CLASSICAL: Server = Server {
+    name: "hybrid-and-classical",
+    port: 44309,
+};
+const MIDDLEBOX_1024: Server = Server {
+    name: "middlebox-1024",
+    port: 44331,
+};
+
 fn run_dir(server: &Server) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("testbed/run")
@@ -144,6 +153,35 @@ fn served_chain_sha256(server: &Server) -> Vec<String> {
 }
 
 async fn scan(server: &Server, profile: HandshakeProfile) -> Option<ScanReport> {
+    scan_with(server, profile, None).await
+}
+
+/// Scan with `--probe` (20 ms spacing to keep the suite fast).
+async fn probe(server: &Server) -> Option<quanta_seek::report::ProbeReport> {
+    let opts = quanta_seek::probe::ProbeOptions {
+        spacing: Duration::from_millis(20),
+        ..Default::default()
+    };
+    let r = scan_with(server, HandshakeProfile::Default, Some(opts)).await?;
+    Some(r.probe.expect("probe section"))
+}
+
+fn sorted(v: &[String]) -> Vec<String> {
+    let mut v = v.to_vec();
+    v.sort();
+    v
+}
+
+/// Accepted sets confirmed by confirm.sh (`expect_set`), sorted.
+fn set(items: &[&str]) -> Vec<String> {
+    sorted(&items.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+}
+
+async fn scan_with(
+    server: &Server,
+    profile: HandshakeProfile,
+    probe: Option<quanta_seek::probe::ProbeOptions>,
+) -> Option<ScanReport> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let anchors = trust_anchors(server)?;
     let opts = ScanOptions {
@@ -152,6 +190,7 @@ async fn scan(server: &Server, profile: HandshakeProfile) -> Option<ScanReport> 
             trust_anchors: Some(anchors),
             timeout_ms: 5000,
         },
+        probe,
         ..ScanOptions::default()
     };
     Some(scan_target(&opts, &format!("localhost:{}", server.port), &profile).await)
@@ -310,13 +349,21 @@ async fn secp384r1mlkem1024_server_is_invisible_today() {
 }
 
 #[tokio::test]
-#[ignore = "M3: needs the per-group prober; rustls cannot offer SecP384r1MLKEM1024"]
-async fn m3_secp384r1mlkem1024_server_group_is_reported() {
-    let Some(r) = scan(&SECP384R1MLKEM1024, HandshakeProfile::All).await else {
+async fn secp384r1mlkem1024_server_found_by_probe() {
+    // Was m3_secp384r1mlkem1024_server_group_is_reported. That test asked for
+    // a completed rustls handshake on a group rustls cannot offer; the M3
+    // capability is the prober reporting the group, which this asserts.
+    let Some(p) = probe(&SECP384R1MLKEM1024).await else {
         return;
     };
-    assert!(r.completed(), "{:?}", r.outcome.error);
-    assert_eq!(group(&r), ("SecP384r1MLKEM1024", "hybrid", "standard"));
+    assert_eq!(sorted(&p.accepted_groups), set(&["SecP384r1MLKEM1024"]));
+    let g = p
+        .groups
+        .iter()
+        .find(|g| g.group.name == "SecP384r1MLKEM1024")
+        .unwrap();
+    assert_eq!(g.result, "accepted");
+    assert_eq!(p.provenance, "observed");
 }
 
 #[tokio::test]
@@ -345,13 +392,12 @@ async fn mlkem512_server_is_invisible_today() {
 }
 
 #[tokio::test]
-#[ignore = "M3: needs the per-group prober; rustls cannot offer MLKEM512"]
-async fn m3_mlkem512_server_group_is_reported() {
-    let Some(r) = scan(&MLKEM512, HandshakeProfile::All).await else {
+async fn mlkem512_server_found_by_probe() {
+    // Was m3_mlkem512_server_group_is_reported (see above).
+    let Some(p) = probe(&MLKEM512).await else {
         return;
     };
-    assert!(r.completed(), "{:?}", r.outcome.error);
-    assert_eq!(group(&r), ("MLKEM512", "pure_pq", "draft"));
+    assert_eq!(sorted(&p.accepted_groups), set(&["MLKEM512"]));
 }
 
 #[tokio::test]
@@ -551,4 +597,90 @@ async fn go_x25519mlkem768_server() {
         return;
     };
     assert_rejected_no_shared_group(&r);
+}
+
+// ---------------------------------------------------------------- prober
+
+#[tokio::test]
+async fn probe_accepted_sets_match_openssl() {
+    // Every expected set is an `expect_set` line in confirm.sh.
+    for (server, expected) in [
+        (&X25519MLKEM768, set(&["X25519MLKEM768"])),
+        (&SECP256R1MLKEM768, set(&["SecP256r1MLKEM768"])),
+        (&MLKEM1024, set(&["MLKEM1024"])),
+        (&CLASSICAL, set(&["x25519", "secp256r1"])),
+        (&HRR_SECP384R1, set(&["secp384r1"])),
+        (&HYBRID_AND_CLASSICAL, set(&["x25519", "X25519MLKEM768"])),
+        (&GO_X25519MLKEM768, set(&["X25519MLKEM768"])),
+    ] {
+        let Some(p) = probe(server).await else { return };
+        assert_eq!(sorted(&p.accepted_groups), expected, "{}", server.name);
+        assert!(!p.budget_exhausted, "{}", server.name);
+    }
+}
+
+#[tokio::test]
+async fn probe_preference_and_downgrade_on_openssl() {
+    let Some(p) = probe(&HYBRID_AND_CLASSICAL).await else {
+        return;
+    };
+    // confirm.sh: with both shares, OpenSSL 3.5.9 follows the client's order.
+    assert_eq!(p.preference.len(), 2);
+    for pref in &p.preference {
+        assert_eq!(pref.selected.as_ref(), Some(&pref.offered[0]), "{pref:?}");
+    }
+    // confirm.sh: PQ listed without a share, x25519 share sent -> OpenSSL
+    // accepts x25519 with one ServerHello (no HRR).
+    let d = p.downgrade.expect("downgrade");
+    assert_eq!(d.behaviour, "accepted_classical_share");
+    assert_eq!(d.reply_group.as_deref(), Some("x25519"));
+    // RFC 8446 §4.1.4: a supported group listed without a key share gets a
+    // HelloRetryRequest for that group. (confirm.sh shows OpenSSL's HRR when
+    // the share is for an unsupported group; a zero-share ClientHello cannot
+    // be sent with s_client.)
+    for h in &p.hello_retry {
+        assert_eq!(h.result, "hello_retry_request", "{h:?}");
+        assert_eq!(h.requested_group.as_deref(), Some(h.group.as_str()));
+    }
+}
+
+#[tokio::test]
+async fn probe_sees_tls12_only_server_refuse_tls13() {
+    // confirm.sh: a TLS 1.3 offer gets a protocol_version alert.
+    let Some(p) = probe(&TLS12_CLASSICAL).await else {
+        return;
+    };
+    assert!(p.accepted_groups.is_empty());
+    let x = p.groups.iter().find(|g| g.group.name == "x25519").unwrap();
+    assert_eq!(
+        (x.result.as_str(), x.alert.as_deref()),
+        ("rejected", Some("protocol_version"))
+    );
+}
+
+#[tokio::test]
+async fn probe_detects_client_hello_size_intolerance() {
+    // Ground truth by construction (testbed/go/main.go middlebox closes when
+    // the first record exceeds 1024 bytes) and confirm.sh (a small
+    // ClientHello passes, an X25519MLKEM768 one gets no ServerHello).
+    let Some(p) = probe(&MIDDLEBOX_1024).await else {
+        return;
+    };
+    assert_eq!(p.accepted_groups, vec!["x25519".to_string()]);
+    let pq = p
+        .groups
+        .iter()
+        .find(|g| g.group.name == "X25519MLKEM768")
+        .unwrap();
+    assert_eq!(
+        pq.result, "closed",
+        "large key share closed by the middlebox"
+    );
+    let t = p.client_hello_tolerance.expect("tolerance");
+    assert_eq!(t.baseline, "ok");
+    assert_eq!(t.padded, "closed");
+    assert_eq!(
+        t.split_records, "ok",
+        "512-byte records pass the first-record check"
+    );
 }

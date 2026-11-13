@@ -3,7 +3,9 @@
 # /out, then run the TLS server. Private keys stay inside the container.
 #
 # Environment:
-#   SERVER  openssl | go                     (default openssl)
+#   SERVER  openssl | go | middlebox          (default openssl)
+#           middlebox: s_server on 127.0.0.1:4444 behind a proxy on :4443
+#           that closes connections whose first record exceeds 1024 bytes
 #   GROUPS  key-exchange groups the server accepts, colon-separated
 #   CERT    ecdsa | mldsa65 | mldsa65-intermediate | slhdsa-ca |
 #           expired | mismatch | self-signed  (default ecdsa)
@@ -118,5 +120,10 @@ case "$SERVER" in
   go)
     cat leaf.pem ${EXTRA} > served.pem
     exec goserver -addr :4443 -cert served.pem -key leaf.key -groups "$GROUPS" ;;
+  middlebox)
+    # shellcheck disable=SC2086
+    openssl s_server -quiet -www -accept 127.0.0.1:4444 -cert leaf.pem -key leaf.key \
+      -groups "$GROUPS" $TLSFLAGS &
+    exec goserver -addr :4443 -proxy-to 127.0.0.1:4444 -max-first-record 1024 ;;
   *) echo "unknown SERVER=$SERVER" >&2; exit 2 ;;
 esac

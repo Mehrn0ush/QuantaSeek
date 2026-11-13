@@ -77,6 +77,57 @@ check cert-self-signed           "" "Verify return code: (18|19|20|21) "
 check go-x25519mlkem768    "-groups X25519MLKEM768"     "Negotiated TLS1.3 group: X25519MLKEM768" "$ok"
 check go-x25519mlkem768    "-groups x25519:secp256r1"   "$rejected"
 
+# Per-group acceptance matrix: each server offered each group QuantaSeek's
+# prober can generate, alone, with a key share. Prints the accepted set,
+# which tests/testbed.rs compares with the prober's accepted_groups.
+PROBEABLE="x25519 secp256r1 secp384r1 secp521r1 MLKEM512 MLKEM768 MLKEM1024 X25519MLKEM768 SecP256r1MLKEM768 SecP384r1MLKEM1024"
+accepted_set() { # service
+  set=""
+  for g in $PROBEABLE; do
+    if docker compose exec -T "$1" sh -c \
+      "openssl s_client -connect 127.0.0.1:4443 -tls1_3 -groups $g </dev/null 2>&1" \
+      | grep -Eq "Negotiated TLS1.3 group: $g|Peer Temp Key"; then
+      set="$set $g"
+    fi
+  done
+  echo "${set# }"
+}
+expect_set() { # service "expected accepted set"
+  got=$(accepted_set "$1")
+  if [ "$got" = "$2" ]; then echo "PASS $1 accepted set: $got"; else echo "FAIL $1 accepted set: got '$got', want '$2'"; fail=1; fi
+}
+expect_set x25519mlkem768      "X25519MLKEM768"
+expect_set secp256r1mlkem768   "SecP256r1MLKEM768"
+expect_set secp384r1mlkem1024  "SecP384r1MLKEM1024"
+expect_set mlkem1024           "MLKEM1024"
+expect_set mlkem512            "MLKEM512"
+expect_set classical           "x25519 secp256r1"
+expect_set hrr-secp384r1       "secp384r1"
+expect_set hybrid-and-classical "x25519 X25519MLKEM768"
+expect_set go-x25519mlkem768   "X25519MLKEM768"
+
+# Preference and downgrade (OpenSSL 3.5 "*" marks groups that get a key share).
+check hybrid-and-classical "-groups *X25519MLKEM768:*x25519" "Negotiated TLS1.3 group: X25519MLKEM768"
+check hybrid-and-classical "-groups *x25519:*X25519MLKEM768" "Peer Temp Key: X25519"
+check classical            "-groups *secp256r1:*x25519"      "Peer Temp Key: ECDH, prime256v1"
+check classical            "-groups *x25519:*secp256r1"      "Peer Temp Key: X25519"
+# PQ group listed without a share, classical share sent: OpenSSL accepts
+# the classical share (one ServerHello, no HRR).
+check hybrid-and-classical "-groups X25519MLKEM768:*x25519"  "Peer Temp Key: X25519"
+n=$(docker compose exec -T hybrid-and-classical sh -c \
+  "openssl s_client -connect 127.0.0.1:4443 -CAfile /out/ca.pem -groups 'X25519MLKEM768:*x25519' -msg </dev/null 2>&1" \
+  | grep -c '<<< TLS 1.3, Handshake .*ServerHello')
+[ "$n" -eq 1 ] && echo "PASS hybrid-and-classical no HRR when PQ listed without share" \
+  || { echo "FAIL hybrid-and-classical ServerHello count $n"; fail=1; }
+
+# Middlebox: a small ClientHello passes; one whose first record exceeds
+# 1024 bytes (X25519MLKEM768 key share) is closed before the server sees it.
+check middlebox-1024 "-groups x25519" "Peer Temp Key: X25519" "$ok"
+mb=$(docker compose exec -T middlebox-1024 sh -c \
+  "openssl s_client -connect 127.0.0.1:4443 -groups X25519MLKEM768 -msg </dev/null 2>&1")
+if printf '%s' "$mb" | grep -q "ServerHello"; then echo "FAIL middlebox-1024 large ClientHello got a ServerHello"; fail=1;
+else echo "PASS middlebox-1024 large ClientHello (X25519MLKEM768) gets no ServerHello"; fi
+
 # Certificate algorithms as written (from the exported chains, not from TLS).
 for svc in cert-mldsa65 cert-mldsa65-intermediate cert-slhdsa-ca; do
   docker compose exec -T "$svc" sh -c \

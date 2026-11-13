@@ -55,6 +55,12 @@ services:
     environment: { GROUPS: secp384r1, TLS: tls13 }
     ports: ["127.0.0.1:44307:4443"]
     volumes: ["./run/hrr-secp384r1:/out"]
+  hybrid-and-classical:
+    # Both a PQ hybrid and a classical group: preference and downgrade probes.
+    <<: *server
+    environment: { GROUPS: "X25519MLKEM768:x25519", TLS: tls13 }
+    ports: ["127.0.0.1:44309:4443"]
+    volumes: ["./run/hybrid-and-classical:/out"]
   tls12-classical:
     <<: *server
     environment: { GROUPS: "x25519:secp256r1", TLS: tls12 }
@@ -92,6 +98,13 @@ services:
     environment: { GROUPS: "X25519MLKEM768:x25519", CERT: self-signed, TLS: tls13 }
     ports: ["127.0.0.1:44316:4443"]
     volumes: ["./run/cert-self-signed:/out"]
+
+  # --- ClientHello size: proxy closes on a first record > 1024 bytes ---
+  middlebox-1024:
+    <<: *server
+    environment: { SERVER: middlebox, GROUPS: "x25519", TLS: tls13 }
+    ports: ["127.0.0.1:44331:4443"]
+    volumes: ["./run/middlebox-1024:/out"]
 
   # --- second implementation: Go crypto/tls ---
   go-x25519mlkem768:
