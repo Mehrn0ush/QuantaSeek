@@ -40,16 +40,16 @@
   "http_redirect": null,
   "not_implemented": [
     "quic",
-    "group_enumeration",
-    "server_group_preference",
-    "downgrade_behaviour",
-    "large_client_hello_tolerance",
     "alpn",
     "ocsp_stapling",
     "session_resumption",
     "early_data",
     "certificate_transparency",
     "revocation"
+  ],
+  "not_requested": [
+    "probe",
+    "http_redirect"
   ],
   "outcome": {
     "error": null,
@@ -72,6 +72,7 @@
       "value": "hybrid"
     }
   },
+  "probe": null,
   "profile": {
     "name": "default",
     "offered_groups": [

@@ -174,6 +174,8 @@ pub struct ScanOptions {
     pub connect_to: Option<SocketAddr>,
     pub connect_timeout: Duration,
     pub handshake: HandshakeConfig,
+    /// Run per-group probes after the handshake (opt-in).
+    pub probe: Option<crate::probe::ProbeOptions>,
 }
 
 impl Default for ScanOptions {
@@ -185,6 +187,7 @@ impl Default for ScanOptions {
             connect_to: None,
             connect_timeout: Duration::from_secs(5),
             handshake: HandshakeConfig::default(),
+            probe: None,
         }
     }
 }
@@ -275,6 +278,7 @@ pub async fn scan_target(
             address,
             profile: *profile,
             custom_trust_store,
+            redirects_requested: opts.follow_redirects,
             started_at,
             duration: clock.elapsed(),
         }
@@ -284,7 +288,14 @@ pub async fn scan_target(
         Ok(t) => t,
         Err(e) => {
             let error = ScanError::from_code_with_message(ErrorCode::InvalidTarget, e, None);
-            return ScanReport::build(ctx(None, None, None, None), None, None, Some(error), None);
+            return ScanReport::build(
+                ctx(None, None, None, None),
+                None,
+                None,
+                Some(error),
+                None,
+                None,
+            );
         }
     };
     let host = parsed.host.as_str();
@@ -310,7 +321,14 @@ pub async fn scan_target(
             address.as_deref().unwrap_or("?")
         );
         let engine = HandshakeEngine::with_config(*profile, opts.handshake.clone());
-        return match engine.perform_handshake(stream, server_name).await {
+        let handshake = engine.perform_handshake(stream, server_name).await;
+        let probe = match &opts.probe {
+            Some(probe_opts) => {
+                Some(crate::probe::probe(opts, probe_opts, host, port, server_name).await)
+            }
+            None => None,
+        };
+        return match handshake {
             Ok(observation) => {
                 let redirect = if opts.follow_redirects {
                     let redirect_opts = RedirectOptions {
@@ -337,6 +355,7 @@ pub async fn scan_target(
                     None,
                     None,
                     redirect,
+                    probe,
                 )
             }
             Err(failure) => ScanReport::build(
@@ -345,6 +364,7 @@ pub async fn scan_target(
                 Some(&failure.partial),
                 Some(classify_handshake_error(&failure.error, profile, port)),
                 None,
+                probe,
             ),
         };
     }
@@ -357,6 +377,7 @@ pub async fn scan_target(
         None,
         None,
         Some(error),
+        None,
         None,
     )
 }

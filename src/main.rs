@@ -39,6 +39,20 @@ struct Cli {
     #[arg(long)]
     follow_redirects: bool,
 
+    /// After the handshake, probe each key-exchange group, preference,
+    /// HelloRetryRequest, downgrade and ClientHello-size behaviour with
+    /// hand-built ClientHellos (one TCP connection per probe)
+    #[arg(long)]
+    probe: bool,
+
+    /// Maximum probes per target with --probe
+    #[arg(long, default_value_t = 40, value_name = "N")]
+    probe_budget: u32,
+
+    /// Minimum delay between probes in milliseconds (at least 100)
+    #[arg(long, default_value_t = 100, value_name = "MS", value_parser = clap::value_parser!(u64).range(100..))]
+    probe_spacing: u64,
+
     /// TCP connect timeout in seconds
     #[arg(long, default_value_t = 5, value_name = "SECS")]
     connect_timeout: u64,
@@ -101,6 +115,11 @@ async fn main() -> Result<()> {
     let opts = ScanOptions {
         sni: cli.sni.clone(),
         follow_redirects: cli.follow_redirects,
+        probe: cli.probe.then(|| quanta_seek::probe::ProbeOptions {
+            max_probes: cli.probe_budget,
+            spacing: Duration::from_millis(cli.probe_spacing),
+            ..Default::default()
+        }),
         connect_timeout: Duration::from_secs(cli.connect_timeout),
         handshake,
         ..ScanOptions::default()

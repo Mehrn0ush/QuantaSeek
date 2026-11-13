@@ -29,10 +29,6 @@ pub const SCHEMA_VERSION: &str = "0";
 /// result so that an absent value is never mistaken for a negative one.
 pub const NOT_IMPLEMENTED: &[&str] = &[
     "quic",
-    "group_enumeration",
-    "server_group_preference",
-    "downgrade_behaviour",
-    "large_client_hello_tolerance",
     "alpn",
     "ocsp_stapling",
     "session_resumption",
@@ -65,8 +61,13 @@ pub struct ScanReport {
     pub pqc: Option<PqcSummary>,
     /// Present only when redirect following was requested.
     pub http_redirect: Option<HttpRedirectInfo>,
+    /// Per-group probing results; present only with `--probe`.
+    pub probe: Option<ProbeReport>,
     /// Aspects this version does not observe.
     pub not_implemented: Vec<String>,
+    /// Capabilities that exist but were not requested for this scan
+    /// ("probe", "http_redirect").
+    pub not_requested: Vec<String>,
     pub evidence: Evidence,
 }
 
@@ -251,6 +252,102 @@ pub struct HttpRedirectInfo {
     /// Never substituted for the target's certificate.
     pub final_destination_certificate: Option<CertificateReport>,
     pub redirect_count: u32,
+}
+
+/// Results of per-group probing (`--probe`). Every result is an observation
+/// of the server's first reply to a ClientHello QuantaSeek built; results
+/// are "accepted"/"server_hello", "hello_retry_request", "rejected" (with
+/// `alert`), "closed", "timeout", "malformed", "connect_failed", or
+/// "not_probed" (with `detail`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeReport {
+    /// Always "observed".
+    pub provenance: String,
+    pub method: String,
+    pub probes_sent: u32,
+    pub probe_budget: u32,
+    pub spacing_ms: u64,
+    /// True if some probes were skipped because the budget ran out.
+    pub budget_exhausted: bool,
+    /// Groups the server accepted when offered alone with a key share.
+    pub accepted_groups: Vec<String>,
+    /// One entry per registered group.
+    pub groups: Vec<GroupProbe>,
+    /// Pairs of accepted groups offered in both orders, both with key shares.
+    pub preference: Vec<PreferenceProbe>,
+    /// Each accepted group listed in supported_groups with no key share.
+    pub hello_retry: Vec<HelloRetryProbe>,
+    /// An accepted PQ group and an accepted classical group listed, with a
+    /// key share for the classical group only.
+    pub downgrade: Option<DowngradeProbe>,
+    /// The same offer sent normally, padded, and split across records.
+    pub client_hello_tolerance: Option<ToleranceProbe>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupProbe {
+    pub group: GroupReport,
+    /// "accepted" means a TLS 1.3 ServerHello selecting this group with a
+    /// key share of the size the group defines.
+    pub result: String,
+    pub alert: Option<String>,
+    /// Group named in the reply, if any.
+    pub reply_group: Option<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PreferenceProbe {
+    /// supported_groups, in the order offered.
+    pub offered: Vec<String>,
+    pub result: String,
+    pub alert: Option<String>,
+    /// Group the server selected.
+    pub selected: Option<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HelloRetryProbe {
+    pub group: String,
+    /// "hello_retry_request" is the RFC 8446 §4.1.4 behaviour.
+    pub result: String,
+    pub alert: Option<String>,
+    /// Group the HelloRetryRequest asked for.
+    pub requested_group: Option<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DowngradeProbe {
+    pub pq_group: String,
+    pub classical_group: String,
+    /// "retried_for_pq_group" (HelloRetryRequest for the PQ group),
+    /// "accepted_classical_share" (ServerHello with the classical group), or
+    /// "other".
+    pub behaviour: String,
+    pub result: String,
+    pub alert: Option<String>,
+    pub reply_group: Option<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToleranceProbe {
+    /// Group offered in all three variants.
+    pub group: String,
+    /// "ok" (ServerHello or HelloRetryRequest), otherwise the probe result.
+    pub baseline: String,
+    pub padded: String,
+    pub padded_bytes: u32,
+    pub split_records: String,
+    pub split_record_bytes: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -477,6 +574,7 @@ pub struct ReportContext {
     pub address: Option<String>,
     pub profile: HandshakeProfile,
     pub custom_trust_store: bool,
+    pub redirects_requested: bool,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub duration: std::time::Duration,
 }
@@ -489,7 +587,15 @@ impl ScanReport {
         partial: Option<&PartialObservation>,
         error: Option<ScanError>,
         http_redirect: Option<HttpRedirectInfo>,
+        probe: Option<ProbeReport>,
     ) -> Self {
+        let mut not_requested = Vec::new();
+        if probe.is_none() {
+            not_requested.push("probe".to_string());
+        }
+        if http_redirect.is_none() && !ctx.redirects_requested {
+            not_requested.push("http_redirect".to_string());
+        }
         let tls = observation.map(|o| TlsInfo {
             version: o
                 .tls_version
@@ -599,7 +705,9 @@ impl ScanReport {
             certificate_validation,
             pqc,
             http_redirect,
+            probe,
             not_implemented: NOT_IMPLEMENTED.iter().map(|s| s.to_string()).collect(),
+            not_requested,
             evidence: Evidence {
                 server_hellos_hex: observation
                     .map(|o| &o.server_hellos)
@@ -683,6 +791,28 @@ impl ScanReport {
         }
         if let Some(r) = &self.http_redirect {
             let _ = writeln!(out, "Redirect: {}", r.redirect_chain.join(" -> "));
+        }
+        if let Some(p) = &self.probe {
+            let _ = writeln!(
+                out,
+                "Probe:    {} probes; accepted groups: {}",
+                p.probes_sent,
+                if p.accepted_groups.is_empty() {
+                    "none".to_string()
+                } else {
+                    p.accepted_groups.join(", ")
+                }
+            );
+            if let Some(d) = &p.downgrade {
+                let _ = writeln!(out, "          downgrade check: {}", d.behaviour);
+            }
+            if let Some(t) = &p.client_hello_tolerance {
+                let _ = writeln!(
+                    out,
+                    "          ClientHello tolerance: baseline {}, padded {}, split {}",
+                    t.baseline, t.padded, t.split_records
+                );
+            }
         }
         let _ = writeln!(out, "Not observed: {}", self.not_implemented.join(", "));
         out
