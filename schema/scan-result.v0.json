@@ -204,10 +204,7 @@
           ]
         },
         "behaviour": {
-          "description": "\"retried_for_pq_group\" (HelloRetryRequest for the PQ group),\n\"accepted_classical_share\" (ServerHello with the classical group), or\n\"other\".",
-          "type": "string"
-        },
-        "classical_group": {
+          "description": "\"retried_for_pq_group\" (HelloRetryRequest for one of the PQ groups),\n\"accepted_classical_share\" (ServerHello with the classical group),\n\"not_probed\" (skipped: probe budget), or \"other\".",
           "type": "string"
         },
         "detail": {
@@ -216,8 +213,16 @@
             "null"
           ]
         },
-        "pq_group": {
+        "key_share": {
+          "description": "The only key share sent (the classical group).",
           "type": "string"
+        },
+        "offered": {
+          "description": "supported_groups as offered: the accepted PQ groups, then the\nclassical group.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "reply_group": {
           "type": [
@@ -230,8 +235,8 @@
         }
       },
       "required": [
-        "pq_group",
-        "classical_group",
+        "offered",
+        "key_share",
         "behaviour",
         "result"
       ],
@@ -731,15 +736,11 @@
           "description": "The same offer sent normally, padded, and split across records."
         },
         "downgrade": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/DowngradeProbe"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "An accepted PQ group and an accepted classical group listed, with a\nkey share for the classical group only."
+          "description": "One case per classical candidate (x25519 first, then secp256r1):\nevery accepted PQ group listed, a key share for the classical group\nonly. Empty if no PQ or no classical group was accepted.",
+          "items": {
+            "$ref": "#/$defs/DowngradeProbe"
+          },
+          "type": "array"
         },
         "groups": {
           "description": "One entry per registered group.",
@@ -749,7 +750,7 @@
           "type": "array"
         },
         "hello_retry": {
-          "description": "Each accepted group listed in supported_groups with no key share.",
+          "description": "Each candidate group listed in supported_groups with no key share.",
           "items": {
             "$ref": "#/$defs/HelloRetryProbe"
           },
@@ -759,7 +760,7 @@
           "type": "string"
         },
         "preference": {
-          "description": "Pairs of accepted groups offered in both orders, both with key shares.",
+          "description": "Pairs of candidate groups offered in both orders, both with key\nshares. Candidates: every accepted PQ group, plus the classical groups\nx25519 and secp256r1 if accepted (another accepted classical group\nonly if neither is). Each PQ group is paired with each classical\ncandidate first; PQ-vs-PQ and classical-vs-classical pairs follow.",
           "items": {
             "$ref": "#/$defs/PreferenceProbe"
           },
@@ -796,7 +797,8 @@
         "accepted_groups",
         "groups",
         "preference",
-        "hello_retry"
+        "hello_retry",
+        "downgrade"
       ],
       "type": "object"
     },
@@ -1070,7 +1072,7 @@
           "type": "integer"
         },
         "group": {
-          "description": "Group offered in all three variants.",
+          "description": "Group offered in every variant: x25519 if accepted, else secp256r1,\nelse the first accepted group.",
           "type": "string"
         },
         "padded": {

@@ -279,13 +279,18 @@ pub struct ProbeReport {
     pub accepted_groups: Vec<String>,
     /// One entry per registered group.
     pub groups: Vec<GroupProbe>,
-    /// Pairs of accepted groups offered in both orders, both with key shares.
+    /// Pairs of candidate groups offered in both orders, both with key
+    /// shares. Candidates: every accepted PQ group, plus the classical groups
+    /// x25519 and secp256r1 if accepted (another accepted classical group
+    /// only if neither is). Each PQ group is paired with each classical
+    /// candidate first; PQ-vs-PQ and classical-vs-classical pairs follow.
     pub preference: Vec<PreferenceProbe>,
-    /// Each accepted group listed in supported_groups with no key share.
+    /// Each candidate group listed in supported_groups with no key share.
     pub hello_retry: Vec<HelloRetryProbe>,
-    /// An accepted PQ group and an accepted classical group listed, with a
-    /// key share for the classical group only.
-    pub downgrade: Option<DowngradeProbe>,
+    /// One case per classical candidate (x25519 first, then secp256r1):
+    /// every accepted PQ group listed, a key share for the classical group
+    /// only. Empty if no PQ or no classical group was accepted.
+    pub downgrade: Vec<DowngradeProbe>,
     /// The same offer sent normally, padded, and split across records.
     pub client_hello_tolerance: Option<ToleranceProbe>,
 }
@@ -330,11 +335,14 @@ pub struct HelloRetryProbe {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DowngradeProbe {
-    pub pq_group: String,
-    pub classical_group: String,
-    /// "retried_for_pq_group" (HelloRetryRequest for the PQ group),
-    /// "accepted_classical_share" (ServerHello with the classical group), or
-    /// "other".
+    /// supported_groups as offered: the accepted PQ groups, then the
+    /// classical group.
+    pub offered: Vec<String>,
+    /// The only key share sent (the classical group).
+    pub key_share: String,
+    /// "retried_for_pq_group" (HelloRetryRequest for one of the PQ groups),
+    /// "accepted_classical_share" (ServerHello with the classical group),
+    /// "not_probed" (skipped: probe budget), or "other".
     pub behaviour: String,
     pub result: String,
     pub alert: Option<String>,
@@ -345,7 +353,8 @@ pub struct DowngradeProbe {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToleranceProbe {
-    /// Group offered in all three variants.
+    /// Group offered in every variant: x25519 if accepted, else secp256r1,
+    /// else the first accepted group.
     pub group: String,
     /// "ok" (ServerHello or HelloRetryRequest), otherwise the probe result.
     pub baseline: String,
@@ -813,8 +822,14 @@ impl ScanReport {
                     p.accepted_groups.join(", ")
                 }
             );
-            if let Some(d) = &p.downgrade {
-                let _ = writeln!(out, "          downgrade check: {}", d.behaviour);
+            for d in &p.downgrade {
+                let _ = writeln!(
+                    out,
+                    "          downgrade check ({} share; offered {}): {}",
+                    d.key_share,
+                    d.offered.join(", "),
+                    d.behaviour
+                );
             }
             if let Some(t) = &p.client_hello_tolerance {
                 let _ = writeln!(

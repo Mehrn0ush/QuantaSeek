@@ -631,7 +631,10 @@ async fn probe_preference_and_downgrade_on_openssl() {
     }
     // confirm.sh: PQ listed without a share, x25519 share sent -> OpenSSL
     // accepts x25519 with one ServerHello (no HRR).
-    let d = p.downgrade.expect("downgrade");
+    assert_eq!(p.downgrade.len(), 1); // x25519 is the only classical candidate
+    let d = &p.downgrade[0];
+    assert_eq!(d.offered, vec!["X25519MLKEM768", "x25519"]);
+    assert_eq!(d.key_share, "x25519");
     assert_eq!(d.behaviour, "accepted_classical_share");
     assert_eq!(d.reply_group.as_deref(), Some("x25519"));
     // RFC 8446 §4.1.4: a supported group listed without a key share gets a

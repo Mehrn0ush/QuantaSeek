@@ -52,6 +52,13 @@ pub const SPLIT_SEGMENT_PAUSE: Duration = Duration::from_millis(50);
 /// Probing stops after this many consecutive probes fail to connect
 /// (refused, reset, timed out at TCP level).
 pub const ABORT_AFTER_CONNECT_FAILURES: u32 = 3;
+/// Classical groups used as the classical side of the preference,
+/// downgrade and tolerance probes, in this order: x25519 and secp256r1 are
+/// the shares real clients send.
+pub const CLASSICAL_PREFERENCE: [u16; 2] = [
+    constants::NAMED_GROUP_X25519,
+    constants::NAMED_GROUP_SECP256R1,
+];
 
 /// Outcome of one probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,118 +310,97 @@ pub async fn probe(
         });
     }
 
-    // 2. Preference: pairs of accepted groups, both orders, both with shares.
-    let candidates: Vec<u16> = accepted.iter().copied().take(3).collect();
-    let mut preference = Vec::new();
-    for &a in &candidates {
-        for &b in &candidates {
-            if a == b {
-                continue;
-            }
-            let outcome = p.offer(&[a, b], &[a, b]).await;
-            let (result, alert, reply_group, detail) = describe(&outcome);
-            preference.push(PreferenceProbe {
-                offered: vec![name(a), name(b)],
-                result,
-                alert,
-                selected: reply_group.map(name),
-                detail,
-            });
-        }
-    }
-
-    // 3. HelloRetryRequest: accepted group listed, no key share sent.
-    let mut hello_retry = Vec::new();
-    for &g in &candidates {
-        let outcome = p.offer(&[g], &[]).await;
-        let (result, alert, reply_group, detail) = describe(&outcome);
-        hello_retry.push(HelloRetryProbe {
-            group: name(g),
-            result,
-            alert,
-            requested_group: reply_group.map(name),
-            detail,
-        });
-    }
-
-    // 4. Downgrade: PQ and classical listed, only the classical share sent.
+    // Candidates. Every accepted PQ/hybrid group is included. The classical
+    // side is chosen the way real clients send shares: x25519 first, then
+    // secp256r1; another accepted classical group is used only if neither is.
     let kind = |g: u16| constants::named_group(g).map(|n| n.kind);
-    let pq = accepted
+    let pq_accepted: Vec<u16> = accepted
         .iter()
         .copied()
-        .find(|g| kind(*g) != Some(GroupKind::Classical));
-    let classical = accepted
+        .filter(|g| kind(*g).is_some_and(|k| k != GroupKind::Classical))
+        .collect();
+    let mut classical: Vec<u16> = CLASSICAL_PREFERENCE
         .iter()
         .copied()
-        .find(|g| kind(*g) == Some(GroupKind::Classical));
-    let downgrade = match (pq, classical) {
-        (Some(pq), Some(classical)) => {
-            let outcome = p.offer(&[pq, classical], &[classical]).await;
-            let (result, alert, reply_group, detail) = describe(&outcome);
-            let behaviour = match (result.as_str(), reply_group) {
-                ("hello_retry_request", Some(g)) if g == pq => "retried_for_pq_group",
-                ("server_hello", Some(g)) if g == classical => "accepted_classical_share",
-                _ => "other",
-            };
-            Some(DowngradeProbe {
-                pq_group: name(pq),
-                classical_group: name(classical),
-                behaviour: behaviour.into(),
-                result,
-                alert,
-                reply_group: reply_group.map(name),
-                detail,
-            })
-        }
-        _ => None,
-    };
+        .filter(|g| accepted.contains(g))
+        .collect();
+    if classical.is_empty() {
+        classical.extend(
+            accepted
+                .iter()
+                .copied()
+                .find(|g| kind(*g) == Some(GroupKind::Classical)),
+        );
+    }
 
-    // 5. ClientHello tolerance: same offer as a baseline, padded, and split.
-    let tolerance = match accepted
-        .iter()
-        .copied()
-        .find(|g| kind(*g) == Some(GroupKind::Classical))
-        .or(accepted.first().copied())
-    {
-        Some(g) => {
-            let spec = ClientHelloSpec {
-                supported_groups: vec![g],
-                key_shares: vec![g],
-                ..Default::default()
-            };
-            let ok = |o: &Outcome| matches!(o, Outcome::Reply(Reply::Hello(_)));
-            let base = p.send(spec.clone(), 16384).await;
-            let padded = p
-                .send(
-                    ClientHelloSpec {
-                        pad_to: Some(PADDED_CLIENT_HELLO_BYTES),
-                        ..spec.clone()
-                    },
-                    16384,
-                )
-                .await;
-            let split = p.send(spec.clone(), SPLIT_RECORD_BYTES).await;
-            let segments = p.send_framed(spec, Framing::SplitSegment).await;
-            let label = |o: &Outcome| {
-                if ok(o) {
-                    "ok".to_string()
-                } else {
-                    describe(o).0
-                }
-            };
-            Some(ToleranceProbe {
-                group: name(g),
-                baseline: label(&base),
-                padded: label(&padded),
-                padded_bytes: PADDED_CLIENT_HELLO_BYTES as u32,
-                split_records: label(&split),
-                split_record_bytes: SPLIT_RECORD_BYTES as u32,
-                split_segments: label(&segments),
-                first_segment_bytes: SPLIT_SEGMENT_BYTES as u32,
-            })
+    // The remaining probes run in priority order, so that when the budget
+    // runs out it is the least informative ones that are skipped (they are
+    // still reported, with result "not_probed").
+    let mut downgrade = Vec::new();
+    let mut hello_retry = Vec::new();
+    let mut preference = Vec::new();
+
+    // Priority 1: downgrade with the first classical candidate (x25519).
+    if let Some(&c) = classical.first() {
+        if !pq_accepted.is_empty() {
+            downgrade.push(downgrade_case(&mut p, &pq_accepted, c).await);
         }
+    }
+
+    // Priority 2: ClientHello tolerance, offering the first classical
+    // candidate (or the first accepted group).
+    let tolerance = match classical.first().copied().or(accepted.first().copied()) {
+        Some(g) => Some(tolerance_probe(&mut p, g).await),
         None => None,
     };
+
+    // Priority 3: HelloRetryRequest for every accepted PQ group.
+    for &g in &pq_accepted {
+        hello_retry.push(hello_retry_probe(&mut p, g).await);
+    }
+
+    // Priority 4: preference, each PQ group against the first classical one.
+    if let Some(&c) = classical.first() {
+        for &q in &pq_accepted {
+            for pair in [[q, c], [c, q]] {
+                preference.push(preference_probe(&mut p, pair).await);
+            }
+        }
+    }
+
+    // Priority 5: downgrade with the second classical candidate (secp256r1).
+    if let Some(&c) = classical.get(1) {
+        if !pq_accepted.is_empty() {
+            downgrade.push(downgrade_case(&mut p, &pq_accepted, c).await);
+        }
+    }
+
+    // Priority 6: HelloRetryRequest for the classical candidates.
+    for &g in &classical {
+        hello_retry.push(hello_retry_probe(&mut p, g).await);
+    }
+
+    // Priority 7: remaining preference pairs: PQ vs the second classical,
+    // PQ vs PQ, classical vs classical.
+    let mut rest: Vec<[u16; 2]> = Vec::new();
+    for &c in classical.iter().skip(1) {
+        for &q in &pq_accepted {
+            rest.extend([[q, c], [c, q]]);
+        }
+    }
+    for (i, &a) in pq_accepted.iter().enumerate() {
+        for &b in &pq_accepted[i + 1..] {
+            rest.extend([[a, b], [b, a]]);
+        }
+    }
+    for (i, &a) in classical.iter().enumerate() {
+        for &b in &classical[i + 1..] {
+            rest.extend([[a, b], [b, a]]);
+        }
+    }
+    for pair in rest {
+        preference.push(preference_probe(&mut p, pair).await);
+    }
 
     ProbeReport {
         provenance: "observed".into(),
@@ -431,5 +417,89 @@ pub async fn probe(
         hello_retry,
         downgrade,
         client_hello_tolerance: tolerance,
+    }
+}
+
+async fn preference_probe(p: &mut Prober<'_>, pair: [u16; 2]) -> PreferenceProbe {
+    let outcome = p.offer(&pair, &pair).await;
+    let (result, alert, reply_group, detail) = describe(&outcome);
+    PreferenceProbe {
+        offered: vec![name(pair[0]), name(pair[1])],
+        result,
+        alert,
+        selected: reply_group.map(name),
+        detail,
+    }
+}
+
+async fn hello_retry_probe(p: &mut Prober<'_>, g: u16) -> HelloRetryProbe {
+    let outcome = p.offer(&[g], &[]).await;
+    let (result, alert, reply_group, detail) = describe(&outcome);
+    HelloRetryProbe {
+        group: name(g),
+        result,
+        alert,
+        requested_group: reply_group.map(name),
+        detail,
+    }
+}
+
+/// Every accepted PQ group listed first, then `classical`; a key share for
+/// `classical` only.
+async fn downgrade_case(p: &mut Prober<'_>, pq: &[u16], classical: u16) -> DowngradeProbe {
+    let mut offered = pq.to_vec();
+    offered.push(classical);
+    let outcome = p.offer(&offered, &[classical]).await;
+    let (result, alert, reply_group, detail) = describe(&outcome);
+    let behaviour = match (result.as_str(), reply_group) {
+        ("hello_retry_request", Some(g)) if pq.contains(&g) => "retried_for_pq_group",
+        ("server_hello", Some(g)) if g == classical => "accepted_classical_share",
+        ("not_probed", _) => "not_probed",
+        _ => "other",
+    };
+    DowngradeProbe {
+        offered: offered.iter().copied().map(name).collect(),
+        key_share: name(classical),
+        behaviour: behaviour.into(),
+        result,
+        alert,
+        reply_group: reply_group.map(name),
+        detail,
+    }
+}
+
+/// The same single-group offer sent normally, padded, split into records
+/// and split across TCP segments.
+async fn tolerance_probe(p: &mut Prober<'_>, g: u16) -> ToleranceProbe {
+    let spec = ClientHelloSpec {
+        supported_groups: vec![g],
+        key_shares: vec![g],
+        ..Default::default()
+    };
+    let base = p.send(spec.clone(), 16384).await;
+    let padded = p
+        .send(
+            ClientHelloSpec {
+                pad_to: Some(PADDED_CLIENT_HELLO_BYTES),
+                ..spec.clone()
+            },
+            16384,
+        )
+        .await;
+    let split = p.send(spec.clone(), SPLIT_RECORD_BYTES).await;
+    let segments = p.send_framed(spec, Framing::SplitSegment).await;
+    let label = |o: &Outcome| match o {
+        Outcome::Reply(Reply::Hello(_)) => "ok".to_string(),
+        other => describe(other).0,
+    };
+    ToleranceProbe {
+        group: name(g),
+        baseline: label(&base),
+        padded: label(&padded),
+        padded_bytes: PADDED_CLIENT_HELLO_BYTES as u32,
+        split_records: label(&split),
+        split_record_bytes: SPLIT_RECORD_BYTES as u32,
+        split_segments: label(&segments),
+        first_segment_bytes: SPLIT_SEGMENT_BYTES as u32,
     }
 }

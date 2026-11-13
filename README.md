@@ -71,11 +71,19 @@ The default scan is one handshake. `--probe` adds up to `--probe-budget` more
 TCP connections, each sending a hand-built TLS 1.3 ClientHello and reading
 only the server's first reply. The probes cover:
 - every group alone, with its key share
-- pairs of accepted groups, in both orders
-- each accepted group listed with no key share (HelloRetryRequest)
-- PQ and classical groups listed with only a classical share (downgrade)
+- pairs of candidate groups, in both orders (preference)
+- each candidate group listed with no key share (HelloRetryRequest)
+- all accepted PQ groups listed with only a classical share, once with
+  x25519 and once with secp256r1 (downgrade)
 - the same offer sent normally, padded to 2048 bytes, split into 512-byte
   records, and split across TCP segments (tolerance)
+
+Candidates are every accepted PQ or hybrid group plus the classical groups
+real clients send shares for: x25519, then secp256r1. Another accepted
+classical group is used only if neither is accepted. The probes after
+enumeration run in priority order, so when the budget runs out the least
+informative ones are skipped. Those are reported as `not_probed`, and the
+rules that need them as `not_evaluated`.
 
 Probing stops early after 3 consecutive connection failures. Results are in
 `probe`, with provenance `observed`.

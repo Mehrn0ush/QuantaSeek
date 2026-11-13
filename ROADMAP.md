@@ -271,6 +271,33 @@ curl and to WebFetch, and I did not try to get around the block. Per the
 §2 rule, no CNSA pack ships. The draft rule it needs (QS-KEX-010, not
 ML-KEM-1024) exists at `info` severity.
 
+### 1.10 Probe candidate selection fix (branch `probe-candidates`)
+
+A real-world run against pq.cloudflareresearch.com (2026-11-13) showed that
+the preference and HelloRetryRequest probes used the first three accepted
+groups in registry order, which there were secp256r1, secp384r1 and
+secp521r1. So they never compared X25519MLKEM768 against a classical group.
+The downgrade and tolerance probes also took the first accepted classical
+group (secp256r1), while real clients send x25519 shares.
+
+Now:
+- Candidates are every accepted PQ group plus x25519, then secp256r1.
+- Downgrade runs once per classical candidate (x25519 first), listing all
+  accepted PQ groups.
+- Probes run in priority order within the 40-probe cap; skipped probes are
+  `not_probed`.
+- QS-KEX-002 names the exact offered groups and key share of each case. It
+  passes only if every planned case was probed.
+
+Three tests failed on the old selection and pass now.
+
+Re-run against pq.cloudflareresearch.com:
+- 25 probes.
+- Server preference: X25519MLKEM768 over x25519 and over secp256r1, in both
+  offer orders.
+- Both downgrade cases (x25519 and secp256r1 shares) got a
+  HelloRetryRequest for X25519MLKEM768.
+
 ---
 
 ## 2. Standards landscape (as of 2026-11-13)
