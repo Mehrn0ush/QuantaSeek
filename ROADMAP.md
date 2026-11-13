@@ -2,7 +2,8 @@
 
 *Written 2026-11-13, at the end of Phase 0 (audit) and Phase 1 (foundation),
 on branch `phase1-foundation`. Updated the same day after milestone M1
-(Truthful output) on branch `m1-truthful-output`: see §1.6 and §5 M1.*
+(Truthful output) on branch `m1-truthful-output` (§1.6, §5 M1), and after
+milestone M2 (Deterministic testbed) on branch `m2-testbed` (§1.7, §5 M2).*
 
 This document has nine parts:
 
@@ -187,6 +188,30 @@ Phase 1 binary before any M1 change.
 - `-p standard google.com` → X25519MLKEM768 before; `-p classical google.com`
   → x25519 after.
 
+### 1.7 Milestone M2 changes (branch `m2-testbed`)
+
+| Commit | Change |
+|---|---|
+| b3a19e7 | Docker testbed (15 servers, OpenSSL 3.5.9 and Go 1.27, pinned by digest), `testbed/confirm.sh` ground truth, `tests/testbed.rs` (`--features testbed`), four ignored `m3_*` tests |
+| 5181059 | **Scanner bug found by fuzzing:** `Target::parse("[]")` accepted an empty host. Bracketed and multi-colon hosts must now be IPv6 literals |
+| aeca7ef | cargo-fuzz targets `server_hello`, `certificate_report`, `target_parse` |
+| 408ef91 | Registry invariant tests (every entry cited and unique); IPv6 literal handshake test |
+| 6bc459d | CI: offline tests, testbed job, nightly fuzz workflow. **Never run on GitHub** |
+| (this commit) | README and ROADMAP for M2 |
+
+The server table, ground-truth method and excluded fixtures are in
+[testbed/README.md](testbed/README.md).
+
+**One ground-truth correction during M2.** The first TLS 1.2 check used
+s_client's default signature_algorithms order and expected
+`ecdsa_secp256r1_sha256`, while QuantaSeek reported `ecdsa_secp384r1_sha384`.
+Re-running s_client with rustls's offer order made OpenSSL report
+`ecdsa_secp384r1_sha384` with digest SHA-384. The scanner was right, and the
+check had not mirrored the scanner's offer. Rule for future fixtures: a
+second-tool check must send the same offer as the scanner profile it is
+compared with. The schema docs now note that in TLS 1.2 an ECDSA codepoint
+does not bind the curve.
+
 ---
 
 ## 2. Standards landscape (as of 2026-11-13)
@@ -348,43 +373,53 @@ Left for later milestones, because they need the prober or the testbed:
 - **Exit codes for CI gating.** The exit code is still 0 whenever output was
   produced. → **M4** (finding thresholds).
 
-### M2: Deterministic testbed (about 2–3 weeks)
+### M2: Deterministic testbed — done 2026-11-13 (branch `m2-testbed`)
 
-M1 added in-process rustls servers (`tests/support`), which cover anything
-rustls can serve. M2 adds the servers rustls cannot provide (OpenSSL 3.5,
-other group sets, PQC certificate types).
+Delivered (§1.7):
+- `testbed/compose.yml` with 15 servers on 127.0.0.1:443xx. Each server's
+  ground truth comes from its configuration and was confirmed with
+  `openssl s_client` from the same image (`testbed/confirm.sh`, 49 checks).
+- `tests/testbed.rs` asserts the confirmed group, certificate algorithms,
+  chain SHA-256 and provenance for every server.
+- Four ignored `m3_*` tests that fail today.
+- Three fuzz targets on the parsers that exist after M1, which replaced the
+  pre-M1 list.
+- Registry invariant tests.
 
-Scope:
-- **`testbed/compose.yml`** with pinned images and digests, each server on
-  localhost with a known configuration:
-  - OpenSSL 3.5+ `s_server` (native ML-KEM, ML-DSA, SLH-DSA): X25519MLKEM768 only;
-    SecP384r1MLKEM1024 only; MLKEM1024 only; classical only; HRR-forcing
-    (key share for a group the client did not predict); obsolete
-    X25519Kyber768Draft00 (via oqs-provider if needed).
-  - rustls `tlsserver-mio`, and Go `crypto/tls` (X25519MLKEM768 default since
-    Go 1.24, to be re-verified).
-  - ML-DSA-65 leaf; composite ML-DSA (RFC 10073) chain; HashML-DSA leaf (the
-    forbidden one); classical chain with an ML-DSA intermediate.
-  - Expired, mismatched and self-signed certificates.
-  - A server that rejects ClientHellos larger than one record or one TCP
-    segment (middlebox simulation).
-- **Integration tests** (`tests/testbed.rs`) behind `--features testbed`. They
-  skip with a clear message when Docker is absent.
-- **Golden files** (`tests/golden/*.json`) via `insta`, with timestamps and
-  durations normalised.
-- **Fuzzing.** `cargo-fuzz` targets for the ServerHello parser, the record
-  splitter, the certificate parser wrapper and (after M3) the HRR parser. CI
-  runs 5 minutes per target nightly.
-- **Unit tests** for every codepoint/OID-table invariant (no duplicates, every
-  entry has a reference).
+Changes from the plan:
+- Golden files are the hand-rolled normaliser added in M1
+  (`tests/schema.rs`), not `insta`. A new dependency was not needed.
+- The fuzz targets differ from the pre-M1 list: M1 deleted the old
+  ServerHello and extension parsers.
+- Not built (reasons in testbed/README.md):
+  - X25519Kyber768Draft00 and RFC 10073 composite chains: no maintained
+    implementation.
+  - HashML-DSA leaf: OpenSSL 3.5.9 cannot produce one.
+  - Large-ClientHello middlebox: needs a purpose-built proxy, moved to M3.
+  - rustls `tlsserver-mio`: duplicates `tests/support`.
 
-Acceptance:
-- `docker compose -f testbed/compose.yml up -d --wait && cargo test --features testbed` passes on Linux CI
-- each testbed server has a test asserting the exact expected group, certificate algorithm and provenance
-- `cargo +nightly fuzz run server_hello -- -max_total_time=300` finds no crash
-- `cargo test` (without the feature) still uses no network: CI runs it with networking disabled (`unshare -n` or a firewalled job)
+Acceptance [ran on macOS arm64, Docker 28.0.4, unless noted]:
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `docker compose -f testbed/compose.yml up -d --build --wait && cargo test --features testbed` | `up --build --wait`: 15/15 healthy; `cargo test --features testbed --test testbed`: 13 passed, 4 ignored. A final clean-start rerun was cut short when Docker Desktop stopped responding (see check 4). **Not run on Linux CI** |
+| 2 | each testbed server has a test asserting the exact group, certificate algorithm and provenance | 15 servers, all covered by `tests/testbed.rs` |
+| 3 | `cargo +nightly fuzz run server_hello -- -max_total_time=300` | 10.0M executions in 301 s, no crash; certificate_report 6.5M; target_parse 13.2M after the fix |
+| 4 | `cargo test` without the feature uses no network | **Not verified by running.** The `--network none` Linux container run aborted when the Docker daemon crashed mid-build (`unexpected EOF`). By reading: every default test uses only 127.0.0.1/::1 in-process servers, or inputs that fail before DNS. The GitHub `unshare` job has not run |
 
 ### M3: Detection engine (about 4–6 weeks)
+
+**Definition of done includes**
+`cargo test --features testbed --test testbed -- --ignored` passing against
+the M2 testbed. These four tests fail today:
+- `m3_secp384r1mlkem1024_server_group_is_reported`
+- `m3_mlkem512_server_group_is_reported`
+- `m3_slhdsa_signed_chain_is_reported`: report a chain webpki cannot verify
+- `m3_invalid_certificates_are_reported`: report expired, mismatched and
+  self-signed chains as not validated
+
+M3 also adds the large-ClientHello middlebox proxy to the testbed, with
+ground truth established by construction.
 
 Scope:
 - **Custom ClientHello prober** (no TLS library), sending one probe per
@@ -688,7 +723,7 @@ plan) rather than relicensing the scanner.
 
 ## 9. Appendix
 
-### 9.1 Verification log (Phase 0, Phase 1 and M1)
+### 9.1 Verification log (Phase 0, Phase 1, M1 and M2)
 
 - **Builds and tools.**
   - Builds: `cargo build`, `cargo test`, `cargo clippy --all-targets`,
@@ -713,6 +748,19 @@ plan) rather than relicensing the scanner.
   diagnosing the read-buffer regression.
 - **M1 source reads:** rustls 0.23.46 `ALL_KX_GROUPS` and `READ_SIZE`;
   rustls-webpki 0.103.17 supported signature algorithms.
+
+- **M2** (no public-host scans):
+  - Read from the pinned OpenSSL 3.5.9 build:
+    `openssl list -tls-groups -tls1_3`, `-tls-signature-algorithms`,
+    `-signature-algorithms` and `-kem-algorithms`.
+  - Go 1.27.4 `crypto/tls` docs (CurvePreferences, CurveIDs).
+  - oqs-provider ALGORITHMS.md (no Kyber groups; composites under
+    1.3.9999.7).
+  - `testbed/confirm.sh`: 49 checks.
+  - `tests/testbed.rs`: 13 tests and 4 ignored.
+  - Fuzzing: 3 × 300 s.
+  - Attempted: default tests in a `--network none` Linux container. Aborted
+    by a Docker daemon crash, so no result.
 
 ### 9.2 Primary sources consulted (2026-11-13)
 

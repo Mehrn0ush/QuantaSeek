@@ -175,8 +175,39 @@ the golden files after an intended output change, run
 regenerate the schema with
 `quantaseek --print-schema > schema/scan-result.v0.json`.
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs all of these on
-Linux and macOS, and checks the MSRV (1.88).
+### Testbed
+
+[`testbed/`](testbed/README.md) runs 15 TLS servers in Docker, each with a
+known configuration: OpenSSL 3.5.9 and Go 1.27, with ML-KEM hybrid and pure
+groups, HelloRetryRequest, TLS 1.2, ML-DSA and SLH-DSA chains, and expired,
+mismatched and self-signed certificates. `testbed/confirm.sh` checks every
+server with `openssl s_client`, independently of QuantaSeek, and
+`tests/testbed.rs` asserts the same values against the scanner:
+
+```bash
+docker compose -f testbed/compose.yml up -d --build --wait
+sh testbed/confirm.sh
+cargo test --features testbed --test testbed
+cargo test --features testbed --test testbed -- --ignored   # fails until M3
+```
+
+The `m3_*` tests are ignored: they state what the M3 detection engine must
+report for servers the scanner cannot see today.
+
+### Fuzzing
+
+```bash
+cd fuzz && cargo +nightly fuzz run server_hello -- -max_total_time=300
+```
+
+The targets are `server_hello` (record splitter, ServerHello and
+HelloRetryRequest extraction), `certificate_report` (X.509 wrapper) and
+`target_parse`.
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs fmt, clippy,
+tests on Linux and macOS, an MSRV (1.88) check, audit and deny. It also has
+an offline-test job, a testbed job, and a nightly fuzz workflow. None of
+these workflows has run on GitHub yet.
 
 ## License
 
