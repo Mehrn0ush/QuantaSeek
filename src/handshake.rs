@@ -833,14 +833,12 @@ impl HandshakeEngine {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_delay)).await;
                     }
 
-                    if crate::verbose() {
-                        eprintln!(
-                            "  [QUIC Fallback] Attempt {}: Trying TCP/TLS on {}:{}",
-                            attempt + 1,
-                            target_host,
-                            target_port
-                        );
-                    }
+                    tracing::debug!(
+                        "  [QUIC Fallback] Attempt {}: Trying TCP/TLS on {}:{}",
+                        attempt + 1,
+                        target_host,
+                        target_port
+                    );
 
                     // PATH A: Try TCP/TLS handshake with raw record capture for PQC detection
                     // FIXED: Use perform_handshake instead of perform_tcp_tls_handshake to get raw_server_hello
@@ -857,9 +855,8 @@ impl HandshakeEngine {
                                     self.perform_handshake(stream, target_host).await
                                 }
                                 Err(e) => {
-                                    if crate::verbose() {
-                                        eprintln!("  [QUIC Fallback] Connection failed: {}", e);
-                                    }
+                                    tracing::debug!("  [QUIC Fallback] Connection failed: {}", e);
+
                                     Err(anyhow::anyhow!("Connection failed: {}", e))
                                 }
                             }
@@ -885,8 +882,8 @@ impl HandshakeEngine {
                                 if is_valid {
                                     raw_server_hello = tcp_tls_result.raw_server_hello.clone();
                                     raw_server_hello_populated = true;
-                                } else if crate::verbose() {
-                                    eprintln!("  [QUIC Fallback] Warning: raw_server_hello does not appear to be a valid ServerHello (first byte: 0x{:02x})", tcp_tls_result.raw_server_hello[0]);
+                                } else {
+                                    tracing::debug!("  [QUIC Fallback] Warning: raw_server_hello does not appear to be a valid ServerHello (first byte: 0x{:02x})", tcp_tls_result.raw_server_hello[0]);
                                 }
                             }
 
@@ -944,22 +941,21 @@ impl HandshakeEngine {
                 // FIXED: Exit retry loop if we got essential data (raw_server_hello + key_exchange)
                 // Certificate is nice to have, but not required for PQC detection
                 if raw_server_hello_populated && !key_exchange.is_empty() {
-                    if crate::verbose() {
-                        eprintln!("  [QUIC Fallback] Essential data extracted, exiting retry loop");
-                    }
+                    tracing::debug!(
+                        "  [QUIC Fallback] Essential data extracted, exiting retry loop"
+                    );
+
                     break; // We have enough data for PQC detection
                 }
             }
 
             // FIXED: Log final fallback status
-            if crate::verbose() {
-                if raw_server_hello_populated && !key_exchange.is_empty() {
-                    eprintln!(
-                        "  [QUIC Fallback] Success: raw_server_hello and key_exchange extracted"
-                    );
-                } else {
-                    eprintln!("  [QUIC Fallback] Warning: Failed to extract raw_server_hello or key_exchange after {} attempts", quic_fallback_retries);
-                }
+            if raw_server_hello_populated && !key_exchange.is_empty() {
+                tracing::debug!(
+                    "  [QUIC Fallback] Success: raw_server_hello and key_exchange extracted"
+                );
+            } else {
+                tracing::debug!("  [QUIC Fallback] Warning: Failed to extract raw_server_hello or key_exchange after {} attempts", quic_fallback_retries);
             }
         }
 
@@ -1036,9 +1032,8 @@ impl HandshakeEngine {
             match tls_parser.parse_server_hello_cipher_suite(&raw_server_hello) {
                 Ok(Some(cs)) => cs,
                 _ => {
-                    if crate::verbose() {
-                        eprintln!("  [QUIC] Warning: Failed to parse cipher suite from raw_server_hello (length: {})", raw_server_hello.len());
-                    }
+                    tracing::debug!("  [QUIC] Warning: Failed to parse cipher suite from raw_server_hello (length: {})", raw_server_hello.len());
+
                     "unknown".to_string() // Failed to parse, use unknown
                 }
             }

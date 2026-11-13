@@ -23,35 +23,11 @@ pub struct HandshakeConfig {
 
 impl Default for HandshakeConfig {
     fn default() -> Self {
-        // Allow deterministic but configurable behaviour via environment variables.
-        // If parsing fails, fall back to safe hard-coded defaults.
-        fn env_u64(var: &str, default: u64) -> u64 {
-            std::env::var(var)
-                .ok()
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(default)
-        }
-
-        fn env_u32(var: &str, default: u32) -> u32 {
-            std::env::var(var)
-                .ok()
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(default)
-        }
-
         Self {
-            // Overall handshake timeout in milliseconds
-            // QUANTASEEK_HANDSHAKE_TIMEOUT_MS=8000
-            timeout_ms: env_u64("QUANTASEEK_HANDSHAKE_TIMEOUT_MS", 5000),
-            // Number of retry attempts for fallback (profile/port/QUIC)
-            // QUANTASEEK_MAX_RETRIES=5
-            retry_attempts: env_u32("QUANTASEEK_MAX_RETRIES", 3),
-            // Exponential backoff multiplier for retries
-            // QUANTASEEK_RETRY_BACKOFF_MULTIPLIER=2
-            retry_backoff_multiplier: env_u32("QUANTASEEK_RETRY_BACKOFF_MULTIPLIER", 2),
-            // Base delay (ms) before first retry
-            // QUANTASEEK_RETRY_BASE_DELAY_MS=100
-            retry_base_delay_ms: env_u64("QUANTASEEK_RETRY_BASE_DELAY_MS", 100),
+            timeout_ms: 5000,
+            retry_attempts: 3,
+            retry_backoff_multiplier: 2,
+            retry_base_delay_ms: 100,
             enable_optimizations: true,
             tls12_fallback_enabled: false,
             always_attempt_tls12_fallback: false,

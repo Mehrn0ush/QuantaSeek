@@ -1,148 +1,154 @@
-use anyhow::{anyhow, Result};
-use clap::{Arg, Command};
+use anyhow::Result;
+use clap::Parser;
 use quanta_seek::{
     detector::PqcDetector,
     http_redirect::detect_http_redirects,
     output::output_results,
     security_scoring::SecurityScorer,
     types::{
-        ClientProfile, ErrorCode, FallbackInfo, HandshakeResult, OutputFormat, PerformanceWarning,
-        ScanError, ScanResult, SecurityScore, SecurityWarning, WarningLevel,
+        ClientProfile, ErrorCode, FallbackInfo, HandshakeConfig, HandshakeResult, OutputFormat,
+        PerformanceWarning, ScanError, ScanResult, SecurityScore, SecurityWarning, WarningLevel,
     },
     HandshakeEngine, HandshakeProfile,
 };
 use std::str::FromStr;
-use std::time::Instant;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
+
+/// Ports tried, in order, when a target does not name one.
+const DEFAULT_PORTS: &[u16] = &[443, 8443, 4433, 9443, 4443];
+
+/// QuantaSeek: report the TLS key exchange and certificate algorithms an
+/// endpoint actually negotiates, with a focus on post-quantum readiness.
+#[derive(Debug, Parser)]
+#[command(name = "quantaseek", version, about, long_about = None)]
+struct Cli {
+    /// Target hostnames, space- or comma-separated (e.g. example.com google.com)
+    #[arg(required = true, num_args = 1.., value_delimiter = ',')]
+    targets: Vec<String>,
+
+    /// Handshake profile label: standard, cloudflare-pqc, hybrid-pqc, pqc-only.
+    /// Currently every profile sends the same ClientHello (see README, Limitations).
+    #[arg(short, long, default_value = "cloudflare-pqc", value_parser = HandshakeProfile::from_str)]
+    profile: HandshakeProfile,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = FormatArg::Json)]
+    format: FormatArg,
+
+    /// Enable TLS 1.2 fallback for certificate analysis
+    #[arg(long)]
+    tls12: bool,
+
+    /// Comma-separated ports to try in order
+    #[arg(long, value_delimiter = ',', default_values_t = DEFAULT_PORTS.to_vec())]
+    ports: Vec<u16>,
+
+    /// TCP connect timeout in seconds
+    #[arg(long, default_value_t = 5, value_name = "SECS")]
+    connect_timeout: u64,
+
+    /// TLS handshake read/write timeout in milliseconds
+    #[arg(long, default_value_t = 5000, value_name = "MS")]
+    handshake_timeout: u64,
+
+    /// Only print errors on stderr; results still go to stdout
+    #[arg(short, long, conflicts_with = "verbose")]
+    quiet: bool,
+
+    /// Increase log detail on stderr (-v debug, -vv trace)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum FormatArg {
+    Json,
+    Text,
+}
+
+/// Run-wide scan settings taken from the command line.
+#[derive(Debug)]
+struct ScanOptions {
+    ports: Vec<u16>,
+    connect_timeout: Duration,
+    handshake: HandshakeConfig,
+}
+
+static OPTIONS: OnceLock<ScanOptions> = OnceLock::new();
+
+fn options() -> &'static ScanOptions {
+    OPTIONS.get_or_init(|| ScanOptions {
+        ports: DEFAULT_PORTS.to_vec(),
+        connect_timeout: Duration::from_secs(5),
+        handshake: HandshakeConfig::default(),
+    })
+}
+
+fn init_logging(quiet: bool, verbose: u8) {
+    let level = match (quiet, verbose) {
+        (true, _) => tracing::Level::ERROR,
+        (false, 0) => tracing::Level::INFO,
+        (false, 1) => tracing::Level::DEBUG,
+        (false, _) => tracing::Level::TRACE,
+    };
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(level)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .with_target(false)
+        .without_time()
+        .init();
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // In rustls 0.23, ensure crypto provider is set at process startup
-    // This is required for prefer-post-quantum feature to work
-    use rustls::crypto::aws_lc_rs::default_provider;
-    let _ = default_provider().install_default();
-    let matches = Command::new("QuantaSeek")
-        .version("0.1.0")
-        .about("PQC-aware TLS scanner")
-        .arg(
-            Arg::new("targets")
-                .help("Target hostnames (e.g., example.com:443, google.com)")
-                .required(true)
-                .num_args(1..)
-                .value_delimiter(','),
-        )
-        .arg(
-            Arg::new("profile")
-                .short('p')
-                .long("profile")
-                .help("Handshake profile to use")
-                .value_parser(HandshakeProfile::from_str)
-                .default_value("cloudflare-pqc"),
-        )
-        .arg(
-            Arg::new("format")
-                .short('f')
-                .long("format")
-                .help("Output format")
-                .value_parser(["json", "text"])
-                .default_value("json"),
-        )
-        .arg(
-            Arg::new("tls12")
-                .long("tls12")
-                .help("Enable TLS 1.2 fallback for certificate analysis")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("ignore-mismatch")
-                .long("ignore-mismatch")
-                .help("Ignore hostname mismatch for experimental servers")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("quiet")
-                .short('q')
-                .long("quiet")
-                .help("Suppress banner, progress lines, and summary; only print result (JSON/text)")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("verbose")
-                .short('v')
-                .long("verbose")
-                .help("Enable debug and progress messages (QUIC fallback, HTTP redirect, etc.)")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .get_matches();
+    let cli = Cli::parse();
+    init_logging(cli.quiet, cli.verbose);
 
-    // Clap validates required arguments, so this should never fail
-    // But we handle it gracefully for better error messages
-    let targets: Vec<String> = matches
-        .get_many::<String>("targets")
-        .ok_or_else(|| anyhow!("No targets specified"))?
-        .cloned()
-        .collect();
+    // rustls 0.23 needs a process-wide crypto provider; aws-lc-rs provides
+    // the ML-KEM hybrid groups.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-    // Parse profile - FIXED: Use FromStr to fail fast on invalid profiles
-    let handshake_profile = matches
-        .get_one::<HandshakeProfile>("profile")
-        .ok_or_else(|| anyhow::anyhow!("Invalid profile specified"))?;
+    let handshake = HandshakeConfig {
+        timeout_ms: cli.handshake_timeout,
+        ..HandshakeConfig::default()
+    };
+    let _ = OPTIONS.set(ScanOptions {
+        ports: cli.ports.clone(),
+        connect_timeout: Duration::from_secs(cli.connect_timeout),
+        handshake,
+    });
 
-    // Convert HandshakeProfile to ClientProfile for backward compatibility
-    let profile = match handshake_profile {
+    let profile = match cli.profile {
         HandshakeProfile::Standard => ClientProfile::Classic,
         HandshakeProfile::CloudflarePqc => ClientProfile::Fallback,
         HandshakeProfile::HybridPqc => ClientProfile::Hybrid,
         HandshakeProfile::PqcOnly => ClientProfile::MaxPqc,
     };
-
-    // Format has a default value, so this should never fail
-    let format_str = matches
-        .get_one::<String>("format")
-        .ok_or_else(|| anyhow!("Format not specified"))?;
-    let tls12_enabled = matches.get_flag("tls12");
-    let ignore_mismatch = matches.get_flag("ignore-mismatch");
-    let quiet = matches.get_flag("quiet");
-    let verbose_flag = matches.get_flag("verbose");
-    if verbose_flag {
-        std::env::set_var("QUANTASEEK_DEBUG", "1");
-    }
-
-    // Parse output format
-    let format = match format_str.as_str() {
-        "json" => OutputFormat::Json,
-        "text" => OutputFormat::Text,
-        _ => OutputFormat::Json, // Default fallback
+    let format = match cli.format {
+        FormatArg::Json => OutputFormat::Json,
+        FormatArg::Text => OutputFormat::Text,
     };
+    let targets = cli.targets;
+    let tls12_enabled = cli.tls12;
 
-    if !quiet {
-        println!("🔍 QuantaSeek PQC TLS Scanner");
-        println!("Targets: {}", targets.join(", "));
-        println!("Profile: {}", profile.display_name());
-        println!("Format: {:?}", format);
-        if tls12_enabled && profile != ClientProfile::Classic {
-            println!("TLS 1.2 Fallback: Enabled (available if TLS 1.3 fails)");
-        }
-        println!("═══════════════════════════");
+    tracing::info!("QuantaSeek {}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("Targets: {}", targets.join(", "));
+    tracing::info!("Profile: {}", profile.display_name());
+    if tls12_enabled && profile != ClientProfile::Classic {
+        tracing::info!("TLS 1.2 fallback enabled for certificate analysis");
     }
 
-    // Start timing the complete scan
     let scan_start = Instant::now();
 
     if targets.len() == 1 {
-        // Single target mode
-        let target = &targets[0];
-        let result = scan_target(target, &profile, tls12_enabled, ignore_mismatch, quiet).await?;
+        let result = scan_target(&targets[0], &profile, tls12_enabled).await?;
         output_results(&result, format);
     } else {
-        // Batch mode
-        let results = scan_multiple_targets(&targets, profile, &format, quiet).await?;
-
-        // Calculate total scan duration
-        let total_scan_duration = scan_start.elapsed();
-
-        // Output batch results
-        output_batch_results(&results, &format, total_scan_duration);
+        let results = scan_multiple_targets(&targets, profile).await?;
+        output_batch_results(&results, &format, scan_start.elapsed());
     }
 
     Ok(())
@@ -152,8 +158,6 @@ async fn scan_target(
     target: &str,
     profile: &ClientProfile,
     tls12_enabled: bool,
-    _ignore_mismatch: bool,
-    quiet: bool,
 ) -> Result<ScanResult> {
     let mut result = ScanResult::new(target.to_string());
     // FIXED: Set profile immediately so failed scans don't show "Unknown"
@@ -170,11 +174,16 @@ async fn scan_target(
     // Try QUIC first for experimental servers (with timeout to avoid hanging)
     const QUIC_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
     if is_experimental {
-        if !quiet {
-            println!("  Attempting QUIC handshake for experimental server...");
-        }
+        tracing::info!("  Attempting QUIC handshake for experimental server...");
+
         let quic_scan_start = Instant::now();
-        let handshake = HandshakeEngine::new_optimized(profile.to_handshake_profile());
+        let handshake = HandshakeEngine::with_config(
+            profile.to_handshake_profile(),
+            HandshakeConfig {
+                timeout_ms: 2000,
+                ..options().handshake
+            },
+        );
         let quic_outcome = tokio::time::timeout(
             std::time::Duration::from_secs(QUIC_HANDSHAKE_TIMEOUT_SECS),
             handshake.perform_quic_handshake(target, 443),
@@ -182,9 +191,8 @@ async fn scan_target(
         .await;
         match quic_outcome {
             Ok(Ok(quic_handshake_result)) => {
-                if !quiet {
-                    println!("  QUIC handshake successful!");
-                }
+                tracing::info!("  QUIC handshake successful!");
+
                 // Convert HandshakeResult -> ScanResult
                 let mut scan_result = ScanResult::new(target.to_string());
                 scan_result.update_from_handshake(quic_handshake_result);
@@ -197,10 +205,13 @@ async fn scan_target(
                     match detect_http_redirects(target, 10).await {
                         Ok(redirect_info) => {
                             if redirect_info.detected {
-                                if quanta_seek::verbose() {
-                                    eprintln!("  [DEBUG] HTTP redirect detected for {} (QUIC): status={:?}, chain={:?}", 
-                                        target, redirect_info.status_code, redirect_info.redirect_chain);
-                                }
+                                tracing::debug!(
+                                    "HTTP redirect detected for {} (QUIC): status={:?}, chain={:?}",
+                                    target,
+                                    redirect_info.status_code,
+                                    redirect_info.redirect_chain
+                                );
+
                                 scan_result.http_redirect = Some(redirect_info.clone());
                                 // Use final destination certificate if different
                                 if let Some(ref final_cert) =
@@ -257,27 +268,22 @@ async fn scan_target(
                                     }
                                 }
                             } else {
-                                if quanta_seek::verbose() {
-                                    eprintln!(
-                                        "  [DEBUG] No HTTP redirect detected for {} (QUIC)",
-                                        target
-                                    );
-                                }
+                                tracing::debug!("No HTTP redirect detected for {} (QUIC)", target);
                             }
                         }
                         Err(e) => {
-                            if quanta_seek::verbose() {
-                                eprintln!(
-                                    "  [DEBUG] HTTP redirect detection failed for {} (QUIC): {}",
-                                    target, e
-                                );
-                            }
+                            tracing::debug!(
+                                "HTTP redirect detection failed for {} (QUIC): {}",
+                                target,
+                                e
+                            );
                         }
                     }
                 } else {
-                    if quanta_seek::verbose() {
-                        eprintln!("  [DEBUG] Skipping HTTP redirect detection (QUIC): handshake not complete for {}", target);
-                    }
+                    tracing::debug!(
+                        "Skipping HTTP redirect detection (QUIC): handshake not complete for {}",
+                        target
+                    );
                 }
 
                 // Calculate security score (recalculate if certificate was replaced)
@@ -295,18 +301,16 @@ async fn scan_target(
                 return Ok(scan_result);
             }
             Ok(Err(e)) => {
-                if !quiet {
-                    println!("  QUIC handshake failed: {}, falling back to TLS", e);
-                }
+                tracing::info!("  QUIC handshake failed: {}, falling back to TLS", e);
+
                 // Continue with TLS fallback
             }
             Err(_) => {
-                if !quiet {
-                    println!(
-                        "  QUIC handshake timed out ({}s), falling back to TLS",
-                        QUIC_HANDSHAKE_TIMEOUT_SECS
-                    );
-                }
+                tracing::info!(
+                    "  QUIC handshake timed out ({}s), falling back to TLS",
+                    QUIC_HANDSHAKE_TIMEOUT_SECS
+                );
+
                 // Continue with TLS fallback
             }
         }
@@ -315,26 +319,7 @@ async fn scan_target(
     let ports_to_try = if is_experimental {
         try_alternative_ports(target).await
     } else {
-        // Deterministic but configurable primary ports.
-        // QUANTASEEK_PRIMARY_PORTS can override the default comma-separated list.
-        let default_ports = vec![443u16, 8443, 4433, 9443, 4443];
-        if let Ok(raw) = std::env::var("QUANTASEEK_PRIMARY_PORTS") {
-            let mut ports = Vec::new();
-            for item in raw.split(',') {
-                if let Ok(p) = item.trim().parse::<u16>() {
-                    if !ports.contains(&p) {
-                        ports.push(p);
-                    }
-                }
-            }
-            if !ports.is_empty() {
-                ports
-            } else {
-                default_ports
-            }
-        } else {
-            default_ports
-        }
+        options().ports.clone()
     };
 
     for port in ports_to_try.iter() {
@@ -342,9 +327,7 @@ async fn scan_target(
         match try_connect(target, *port).await {
             Ok(stream) => {
                 connection_success = true;
-                if !quiet {
-                    println!("  Connected to {}:{}", target, port);
-                }
+                tracing::info!("  Connected to {}:{}", target, port);
 
                 // FIXED: Use the actual provided profile instead of overriding
                 let actual_profile = *profile;
@@ -396,9 +379,8 @@ async fn scan_target(
             match try_connect(target, *port).await {
                 Ok(stream) => {
                     connection_success = true;
-                    if !quiet {
-                        println!("  Connected to {}:{} (PQC port)", target, port);
-                    }
+                    tracing::info!("  Connected to {}:{} (PQC port)", target, port);
+
                     match perform_scan_with_stream(stream, target, profile, tls12_enabled).await {
                         Ok(scan_result) => {
                             result = scan_result;
@@ -512,19 +494,9 @@ async fn scan_target(
 async fn try_connect(hostname: &str, port: u16) -> Result<TcpStream, Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", hostname, port);
 
-    // Try with deterministic but configurable timeout for faster scanning.
-    // QUANTASEEK_CONNECT_TIMEOUT_SECS can override the default of 5 seconds.
-    let timeout_secs: u64 = std::env::var("QUANTASEEK_CONNECT_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(5);
+    let timeout = options().connect_timeout;
 
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        TcpStream::connect(&addr),
-    )
-    .await
-    {
+    match tokio::time::timeout(timeout, TcpStream::connect(&addr)).await {
         Ok(Ok(stream)) => {
             // Set TCP options for better performance
             stream.set_nodelay(true)?;
@@ -667,7 +639,8 @@ async fn perform_scan_with_stream(
         // Standard profile = TLS 1.2 only, but we still need raw_server_hello for analysis
         let handshake_attempt = if *fallback_profile == HandshakeProfile::Standard {
             // Standard profile = TLS 1.2 only
-            let mut handshake = HandshakeEngine::new(*fallback_profile);
+            let mut handshake =
+                HandshakeEngine::with_config(*fallback_profile, options().handshake);
             handshake = handshake.with_tls12_fallback();
 
             // FIXED: Use perform_handshake instead of perform_tcp_tls_handshake to capture raw_server_hello
@@ -685,7 +658,8 @@ async fn perform_scan_with_stream(
             }
         } else {
             // For PQC profiles, use normal TLS 1.3 handshake
-            let mut handshake = HandshakeEngine::new(*fallback_profile);
+            let mut handshake =
+                HandshakeEngine::with_config(*fallback_profile, options().handshake);
 
             // Enable TLS 1.2 fallback for certificate extraction if requested
             let should_enable_tls12 = tls12_enabled
@@ -853,12 +827,13 @@ async fn perform_scan_with_stream(
         match detect_http_redirects(target, 10).await {
             Ok(redirect_info) => {
                 if redirect_info.detected {
-                    if quanta_seek::verbose() {
-                        eprintln!(
-                            "  [DEBUG] HTTP redirect detected for {}: status={:?}, chain={:?}",
-                            target, redirect_info.status_code, redirect_info.redirect_chain
-                        );
-                    }
+                    tracing::debug!(
+                        "HTTP redirect detected for {}: status={:?}, chain={:?}",
+                        target,
+                        redirect_info.status_code,
+                        redirect_info.redirect_chain
+                    );
+
                     scan_result.http_redirect = Some(redirect_info.clone());
                     // Use final destination certificate if different
                     if let Some(ref final_cert) = redirect_info.final_destination_certificate {
@@ -905,27 +880,18 @@ async fn perform_scan_with_stream(
                         }
                     }
                 } else {
-                    if quanta_seek::verbose() {
-                        eprintln!("  [DEBUG] No HTTP redirect detected for {}", target);
-                    }
+                    tracing::debug!("No HTTP redirect detected for {}", target);
                 }
             }
             Err(e) => {
-                if quanta_seek::verbose() {
-                    eprintln!(
-                        "  [DEBUG] HTTP redirect detection failed for {}: {}",
-                        target, e
-                    );
-                }
+                tracing::debug!("HTTP redirect detection failed for {}: {}", target, e);
             }
         }
     } else {
-        if quanta_seek::verbose() {
-            eprintln!(
-                "  [DEBUG] Skipping HTTP redirect detection: handshake not complete for {}",
-                target
-            );
-        }
+        tracing::debug!(
+            "Skipping HTTP redirect detection: handshake not complete for {}",
+            target
+        );
     }
 
     let total_scan_duration = scan_start.elapsed();
@@ -937,8 +903,6 @@ async fn perform_scan_with_stream(
 async fn scan_multiple_targets(
     targets: &[String],
     profile: ClientProfile,
-    _format: &OutputFormat,
-    quiet: bool,
 ) -> Result<Vec<ScanResult>> {
     let mut results = Vec::new();
     let mut successful_count = 0;
@@ -946,11 +910,9 @@ async fn scan_multiple_targets(
     let start_time = std::time::Instant::now();
 
     for target in targets {
-        if !quiet {
-            println!("Scanning: {}", target);
-        }
+        tracing::info!("Scanning: {}", target);
 
-        match scan_target(target, &profile, true, false, quiet).await {
+        match scan_target(target, &profile, true).await {
             // Enable TLS 1.2 fallback for batch scans
             Ok(mut result) => {
                 // Add performance analysis and recommendations for batch results
@@ -1004,15 +966,12 @@ async fn scan_multiple_targets(
                     failed_count += 1;
                 }
                 results.push(result);
-                if !quiet {
-                    println!("✅ Completed: {}", target);
-                }
+                tracing::info!("✅ Completed: {}", target);
             }
             Err(e) => {
                 failed_count += 1;
-                if !quiet {
-                    println!("❌ Failed: {} - {}", target, e);
-                }
+                tracing::info!("❌ Failed: {} - {}", target, e);
+
                 // Create a failed result for consistency
                 let mut failed_result = ScanResult::new(target.clone());
                 // FIXED: Set profile for failed scans so they don't show "Unknown"
@@ -1036,145 +995,143 @@ async fn scan_multiple_targets(
 
     let total_duration = start_time.elapsed();
 
-    if !quiet {
-        // Print summary
-        println!("\n📊 Scan Summary:");
-        println!("  Total targets: {}", targets.len());
-        println!(
-            "  Successful: {} ({:.1}%)",
-            successful_count,
-            (successful_count as f64 / targets.len() as f64) * 100.0
+    // Print summary
+    tracing::info!("\n📊 Scan Summary:");
+    tracing::info!("  Total targets: {}", targets.len());
+    tracing::info!(
+        "  Successful: {} ({:.1}%)",
+        successful_count,
+        (successful_count as f64 / targets.len() as f64) * 100.0
+    );
+    tracing::info!(
+        "  Failed: {} ({:.1}%)",
+        failed_count,
+        (failed_count as f64 / targets.len() as f64) * 100.0
+    );
+    tracing::info!("  Total duration: {:.2}s", total_duration.as_secs_f64());
+
+    if successful_count > 0 {
+        let avg_duration: f64 = results
+            .iter()
+            .filter_map(|r| r.handshake_duration_ms)
+            .map(|d| d as f64)
+            .sum::<f64>()
+            / successful_count as f64;
+        tracing::info!("  Average handshake time: {:.1}ms", avg_duration);
+
+        let total_scan_time = total_duration.as_secs_f64();
+        let scans_per_second = successful_count as f64 / total_scan_time;
+        tracing::info!("  Throughput: {:.2} scans/second", scans_per_second);
+
+        let pqc_detected = results.iter().filter(|r| r.pqc_detected).count();
+        let hybrid_detected = results
+            .iter()
+            .filter(|r| r.analysis.hybrid_detected)
+            .count();
+        let pqc_signatures_used = results
+            .iter()
+            .filter(|r| r.analysis.pqc_signature_used == Some(true))
+            .count();
+
+        tracing::info!(
+            "  PQC detected: {} ({:.1}%)",
+            pqc_detected,
+            (pqc_detected as f64 / successful_count as f64) * 100.0
         );
-        println!(
-            "  Failed: {} ({:.1}%)",
-            failed_count,
-            (failed_count as f64 / targets.len() as f64) * 100.0
+        tracing::info!(
+            "  Hybrid mode: {} ({:.1}%)",
+            hybrid_detected,
+            (hybrid_detected as f64 / successful_count as f64) * 100.0
         );
-        println!("  Total duration: {:.2}s", total_duration.as_secs_f64());
+        tracing::info!(
+            "  PQC signatures used: {} ({:.1}%)",
+            pqc_signatures_used,
+            (pqc_signatures_used as f64 / successful_count as f64) * 100.0
+        );
 
-        if successful_count > 0 {
-            let avg_duration: f64 = results
-                .iter()
-                .filter_map(|r| r.handshake_duration_ms)
-                .map(|d| d as f64)
-                .sum::<f64>()
-                / successful_count as f64;
-            println!("  Average handshake time: {:.1}ms", avg_duration);
+        let certificates_visible = results.iter().filter(|r| r.certificate_visible).count();
+        let certificates_analyzed = results.iter().filter(|r| r.certificate.is_some()).count();
 
-            let total_scan_time = total_duration.as_secs_f64();
-            let scans_per_second = successful_count as f64 / total_scan_time;
-            println!("  Throughput: {:.2} scans/second", scans_per_second);
+        tracing::info!(
+            "  Certificates visible: {} ({:.1}%)",
+            certificates_visible,
+            (certificates_visible as f64 / successful_count as f64) * 100.0
+        );
+        tracing::info!(
+            "  Certificates analyzed: {} ({:.1}%)",
+            certificates_analyzed,
+            (certificates_analyzed as f64 / successful_count as f64) * 100.0
+        );
 
-            let pqc_detected = results.iter().filter(|r| r.pqc_detected).count();
-            let hybrid_detected = results
-                .iter()
-                .filter(|r| r.analysis.hybrid_detected)
-                .count();
-            let pqc_signatures_used = results
-                .iter()
-                .filter(|r| r.analysis.pqc_signature_used == Some(true))
-                .count();
-
-            println!(
-                "  PQC detected: {} ({:.1}%)",
-                pqc_detected,
-                (pqc_detected as f64 / successful_count as f64) * 100.0
-            );
-            println!(
-                "  Hybrid mode: {} ({:.1}%)",
-                hybrid_detected,
-                (hybrid_detected as f64 / successful_count as f64) * 100.0
-            );
-            println!(
-                "  PQC signatures used: {} ({:.1}%)",
-                pqc_signatures_used,
-                (pqc_signatures_used as f64 / successful_count as f64) * 100.0
-            );
-
-            let certificates_visible = results.iter().filter(|r| r.certificate_visible).count();
-            let certificates_analyzed = results.iter().filter(|r| r.certificate.is_some()).count();
-
-            println!(
-                "  Certificates visible: {} ({:.1}%)",
-                certificates_visible,
-                (certificates_visible as f64 / successful_count as f64) * 100.0
-            );
-            println!(
-                "  Certificates analyzed: {} ({:.1}%)",
-                certificates_analyzed,
-                (certificates_analyzed as f64 / successful_count as f64) * 100.0
-            );
-
-            let mut tls_versions = std::collections::HashMap::new();
-            for result in &results {
-                if result.handshake_complete {
-                    *tls_versions.entry(result.tls_version.clone()).or_insert(0) += 1;
-                }
+        let mut tls_versions = std::collections::HashMap::new();
+        for result in &results {
+            if result.handshake_complete {
+                *tls_versions.entry(result.tls_version.clone()).or_insert(0) += 1;
             }
+        }
 
-            if !tls_versions.is_empty() {
-                println!("  TLS version distribution:");
-                for (version, count) in tls_versions {
-                    println!(
-                        "    {}: {} servers ({:.1}%)",
-                        version,
-                        count,
-                        (count as f64 / successful_count as f64) * 100.0
-                    );
-                }
+        if !tls_versions.is_empty() {
+            tracing::info!("  TLS version distribution:");
+            for (version, count) in tls_versions {
+                tracing::info!(
+                    "    {}: {} servers ({:.1}%)",
+                    version,
+                    count,
+                    (count as f64 / successful_count as f64) * 100.0
+                );
             }
+        }
 
-            let mut profile_usage = std::collections::HashMap::new();
-            for result in &results {
-                if result.handshake_complete {
-                    *profile_usage
-                        .entry(result.client_profile_used.clone())
-                        .or_insert(0) += 1;
-                }
+        let mut profile_usage = std::collections::HashMap::new();
+        for result in &results {
+            if result.handshake_complete {
+                *profile_usage
+                    .entry(result.client_profile_used.clone())
+                    .or_insert(0) += 1;
             }
+        }
 
-            if !profile_usage.is_empty() {
-                println!("  Client profiles used:");
-                for (profile, count) in profile_usage {
-                    println!("    {}: {} servers", profile, count);
-                }
+        if !profile_usage.is_empty() {
+            tracing::info!("  Client profiles used:");
+            for (profile, count) in profile_usage {
+                tracing::info!("    {}: {} servers", profile, count);
             }
+        }
 
-            let mut algorithms = std::collections::HashMap::new();
-            for result in &results {
-                if result.handshake_complete {
-                    for kex in &result.analysis.pqc_key_exchange {
+        let mut algorithms = std::collections::HashMap::new();
+        for result in &results {
+            if result.handshake_complete {
+                for kex in &result.analysis.pqc_key_exchange {
+                    *algorithms.entry(kex.clone()).or_insert(0) += 1;
+                }
+                for kex in &result.key_exchange {
+                    if !result.analysis.pqc_key_exchange.contains(kex) {
                         *algorithms.entry(kex.clone()).or_insert(0) += 1;
                     }
-                    for kex in &result.key_exchange {
-                        if !result.analysis.pqc_key_exchange.contains(kex) {
-                            *algorithms.entry(kex.clone()).or_insert(0) += 1;
-                        }
-                    }
                 }
             }
+        }
 
-            if !algorithms.is_empty() {
-                println!("  Key exchange algorithms:");
-                for (algo, count) in algorithms {
-                    println!("    {}: {} servers", algo, count);
+        if !algorithms.is_empty() {
+            tracing::info!("  Key exchange algorithms:");
+            for (algo, count) in algorithms {
+                tracing::info!("    {}: {} servers", algo, count);
+            }
+        }
+
+        let mut signature_algorithms = std::collections::HashMap::new();
+        for result in &results {
+            if result.handshake_complete {
+                for sig in &result.analysis.pqc_signature_algorithms {
+                    *signature_algorithms.entry(sig.clone()).or_insert(0) += 1;
                 }
             }
+        }
 
-            let mut signature_algorithms = std::collections::HashMap::new();
-            for result in &results {
-                if result.handshake_complete {
-                    for sig in &result.analysis.pqc_signature_algorithms {
-                        *signature_algorithms.entry(sig.clone()).or_insert(0) += 1;
-                    }
-                }
-            }
-
-            if !signature_algorithms.is_empty() {
-                println!("  PQC signature algorithms:");
-                for (sig, count) in signature_algorithms {
-                    println!("    {}: {} servers", sig, count);
-                }
+        if !signature_algorithms.is_empty() {
+            tracing::info!("  PQC signature algorithms:");
+            for (sig, count) in signature_algorithms {
+                tracing::info!("    {}: {} servers", sig, count);
             }
         }
     }
@@ -1201,12 +1158,12 @@ fn output_batch_results(
             match serde_json::to_string_pretty(&batch_output) {
                 Ok(json) => println!("{}", json),
                 Err(e) => {
-                    eprintln!("Failed to serialize batch results: {}", e);
+                    tracing::error!("Failed to serialize batch results: {}", e);
                     // Fallback to compact JSON
                     if let Ok(json) = serde_json::to_string(&batch_output) {
                         println!("{}", json);
                     } else {
-                        eprintln!("Failed to serialize batch results in compact format");
+                        tracing::error!("Failed to serialize batch results in compact format");
                     }
                 }
             }
@@ -1241,7 +1198,7 @@ fn output_batch_results(
             }
         }
         OutputFormat::Csv => {
-            println!("CSV batch output is not implemented in this version.");
+            tracing::error!("CSV output is not implemented");
         }
     }
 }

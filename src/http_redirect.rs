@@ -3,14 +3,6 @@ use crate::types::{CertificateInfo, HttpRedirectInfo};
 use anyhow::{anyhow, Result};
 use std::time::Duration;
 
-macro_rules! debug_eprintln {
-    ($($arg:tt)*) => {
-        if crate::verbose() {
-            eprintln!($($arg)*);
-        }
-    };
-}
-
 /// HTTP method to use for redirect detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpMethod {
@@ -59,10 +51,7 @@ pub async fn detect_http_redirects_with_method(
     max_redirects: u32,
     method: HttpMethod,
 ) -> Result<HttpRedirectInfo> {
-    debug_eprintln!(
-        "  [DEBUG] Starting HTTP redirect detection for: {}",
-        initial_url
-    );
+    tracing::debug!("Starting HTTP redirect detection for: {}", initial_url);
 
     let mut redirect_chain = Vec::new();
     let current_url = initial_url.to_string();
@@ -79,7 +68,7 @@ pub async fn detect_http_redirects_with_method(
     };
 
     redirect_chain.push(url.clone());
-    debug_eprintln!("  [DEBUG] Initial URL: {}", url);
+    tracing::debug!("Initial URL: {}", url);
 
     // Create HTTP client with redirect policy
     // Use rustls-tls feature to ensure compatibility with TLS scanning
@@ -89,18 +78,14 @@ pub async fn detect_http_redirects_with_method(
         .build()
         .map_err(|e| {
             let err_msg = format!("Failed to create HTTP client: {}", e);
-            debug_eprintln!("  [DEBUG] {}", err_msg);
+            tracing::debug!("{}", err_msg);
             anyhow!(err_msg)
         })?;
 
     // Follow redirects manually
     for redirect_attempt in 0..=max_redirects {
         if redirect_attempt > 0 {
-            debug_eprintln!(
-                "  [DEBUG] Following redirect #{} to: {}",
-                redirect_attempt,
-                url
-            );
+            tracing::debug!("Following redirect #{} to: {}", redirect_attempt, url);
         }
 
         // Send HTTP request based on configured method
@@ -109,15 +94,15 @@ pub async fn detect_http_redirects_with_method(
                 // Use HEAD only
                 match client.head(&url).send().await {
                     Ok(resp) => {
-                        debug_eprintln!(
-                            "  [DEBUG] HEAD request successful for {}: status={}",
+                        tracing::debug!(
+                            "HEAD request successful for {}: status={}",
                             url,
                             resp.status()
                         );
                         resp
                     }
                     Err(e) => {
-                        debug_eprintln!("  [DEBUG] HEAD request failed for {}: {}", url, e);
+                        tracing::debug!("HEAD request failed for {}: {}", url, e);
                         break;
                     }
                 }
@@ -126,15 +111,15 @@ pub async fn detect_http_redirects_with_method(
                 // Use GET only
                 match client.get(&url).send().await {
                     Ok(resp) => {
-                        debug_eprintln!(
-                            "  [DEBUG] GET request successful for {}: status={}",
+                        tracing::debug!(
+                            "GET request successful for {}: status={}",
                             url,
                             resp.status()
                         );
                         resp
                     }
                     Err(e) => {
-                        debug_eprintln!("  [DEBUG] GET request failed for {}: {}", url, e);
+                        tracing::debug!("GET request failed for {}: {}", url, e);
                         break;
                     }
                 }
@@ -144,32 +129,23 @@ pub async fn detect_http_redirects_with_method(
                 match client.head(&url).send().await {
                     Ok(resp) => {
                         let status = resp.status();
-                        debug_eprintln!(
-                            "  [DEBUG] HEAD request successful for {}: status={}",
-                            url,
-                            status
-                        );
+                        tracing::debug!("HEAD request successful for {}: status={}", url, status);
 
                         // If HEAD returns 405 (Method Not Allowed), try GET instead
                         // Some servers don't support HEAD but support GET
                         if status == 405 {
-                            debug_eprintln!(
-                                "  [DEBUG] HEAD returned 405 (Method Not Allowed), trying GET"
-                            );
+                            tracing::debug!("HEAD returned 405 (Method Not Allowed), trying GET");
                             match client.get(&url).send().await {
                                 Ok(get_resp) => {
-                                    debug_eprintln!(
-                                        "  [DEBUG] GET request successful for {}: status={}",
+                                    tracing::debug!(
+                                        "GET request successful for {}: status={}",
                                         url,
                                         get_resp.status()
                                     );
                                     get_resp
                                 }
                                 Err(e2) => {
-                                    debug_eprintln!(
-                                        "  [DEBUG] GET request failed after HEAD 405: {}",
-                                        e2
-                                    );
+                                    tracing::debug!("GET request failed after HEAD 405: {}", e2);
                                     // If GET also fails, break the loop - we can't proceed with redirect detection
                                     // The 405 response from HEAD doesn't contain redirect info anyway
                                     break;
@@ -182,15 +158,11 @@ pub async fn detect_http_redirects_with_method(
                     Err(e) => {
                         // If HEAD fails completely (network error), try GET
                         // Log debug info: HEAD requests may fail for some servers
-                        debug_eprintln!(
-                            "  [DEBUG] HEAD request failed for {}: {} (trying GET)",
-                            url,
-                            e
-                        );
+                        tracing::debug!("HEAD request failed for {}: {} (trying GET)", url, e);
                         match client.get(&url).send().await {
                             Ok(resp) => {
-                                debug_eprintln!(
-                                    "  [DEBUG] GET request successful for {}: status={}",
+                                tracing::debug!(
+                                    "GET request successful for {}: status={}",
                                     url,
                                     resp.status()
                                 );
@@ -198,8 +170,8 @@ pub async fn detect_http_redirects_with_method(
                             }
                             Err(e2) => {
                                 // Both HEAD and GET failed - log and return partial results
-                                debug_eprintln!(
-                                    "  [DEBUG] Both HEAD and GET failed for {}: HEAD={}, GET={}",
+                                tracing::debug!(
+                                    "Both HEAD and GET failed for {}: HEAD={}, GET={}",
                                     url,
                                     e,
                                     e2
@@ -214,15 +186,15 @@ pub async fn detect_http_redirects_with_method(
         };
 
         let response_status = response.status();
-        debug_eprintln!("  [DEBUG] Response status for {}: {}", url, response_status);
+        tracing::debug!("Response status for {}: {}", url, response_status);
 
         // Check if this is a redirect
         if response_status.is_redirection() {
             let status = response_status.as_u16();
             status_code = Some(status);
             redirect_count += 1;
-            debug_eprintln!(
-                "  [DEBUG] Redirect detected: status={} ({} redirects so far)",
+            tracing::debug!(
+                "Redirect detected: status={} ({} redirects so far)",
                 status,
                 redirect_count
             );
@@ -230,7 +202,7 @@ pub async fn detect_http_redirects_with_method(
             // Get redirect location
             if let Some(location) = response.headers().get("location") {
                 if let Ok(location_str) = location.to_str() {
-                    debug_eprintln!("  [DEBUG] Location header: {}", location_str);
+                    tracing::debug!("Location header: {}", location_str);
 
                     // Handle relative URLs
                     let next_url = if location_str.starts_with("http://")
@@ -249,14 +221,11 @@ pub async fn detect_http_redirects_with_method(
                         format!("{}/{}", base, location_str)
                     };
 
-                    debug_eprintln!("  [DEBUG] Resolved redirect URL: {}", next_url);
+                    tracing::debug!("Resolved redirect URL: {}", next_url);
 
                     // Check for redirect loops
                     if redirect_chain.contains(&next_url) {
-                        debug_eprintln!(
-                            "  [DEBUG] Redirect loop detected: {} already in chain",
-                            next_url
-                        );
+                        tracing::debug!("Redirect loop detected: {} already in chain", next_url);
                         break;
                     }
 
@@ -264,17 +233,14 @@ pub async fn detect_http_redirects_with_method(
                     url = next_url;
                     continue;
                 } else {
-                    debug_eprintln!("  [DEBUG] Location header contains invalid UTF-8");
+                    tracing::debug!("Location header contains invalid UTF-8");
                 }
             } else {
-                debug_eprintln!(
-                    "  [DEBUG] Redirect status {} but no Location header",
-                    status
-                );
+                tracing::debug!("Redirect status {} but no Location header", status);
             }
         } else {
-            debug_eprintln!(
-                "  [DEBUG] Not a redirect (status={}), stopping redirect chain",
+            tracing::debug!(
+                "Not a redirect (status={}), stopping redirect chain",
                 response_status
             );
         }
@@ -289,40 +255,44 @@ pub async fn detect_http_redirects_with_method(
             .last()
             .ok_or_else(|| anyhow!("Redirect chain is empty"))?;
 
-        debug_eprintln!(
-            "  [DEBUG] Attempting to extract certificate from final destination: {}",
+        tracing::debug!(
+            "Attempting to extract certificate from final destination: {}",
             final_url
         );
 
         // Extract hostname from final URL
         if let Ok(parsed_url) = url::Url::parse(final_url) {
             if let Some(host) = parsed_url.host_str() {
-                debug_eprintln!("  [DEBUG] Extracting certificate from hostname: {}", host);
+                tracing::debug!("Extracting certificate from hostname: {}", host);
 
                 // Get certificate from final destination
                 match get_certificate_from_url(final_url).await {
                     Ok(cert_info) => {
-                        debug_eprintln!("  [DEBUG] Successfully extracted certificate from {}: subject={}, issuer={}", 
-                            final_url, cert_info.subject, cert_info.issuer);
+                        tracing::debug!(
+                            "Successfully extracted certificate from {}: subject={}, issuer={}",
+                            final_url,
+                            cert_info.subject,
+                            cert_info.issuer
+                        );
                         final_destination_certificate = Some(cert_info);
                     }
                     Err(e) => {
                         let err_msg =
                             format!("Failed to extract certificate from {}: {}", final_url, e);
-                        debug_eprintln!("  [DEBUG] {}", err_msg);
+                        tracing::debug!("{}", err_msg);
                         certificate_extraction_error = Some(err_msg);
                         // Continue - we still return redirect info even if certificate extraction fails
                     }
                 }
             } else {
-                debug_eprintln!("  [DEBUG] No hostname in final URL: {}", final_url);
+                tracing::debug!("No hostname in final URL: {}", final_url);
             }
         } else {
-            debug_eprintln!("  [DEBUG] Failed to parse final URL: {}", final_url);
+            tracing::debug!("Failed to parse final URL: {}", final_url);
         }
     } else {
-        debug_eprintln!(
-            "  [DEBUG] No redirects detected (count={}, chain_len={})",
+        tracing::debug!(
+            "No redirects detected (count={}, chain_len={})",
             redirect_count,
             redirect_chain.len()
         );
@@ -344,14 +314,14 @@ pub async fn detect_http_redirects_with_method(
     };
 
     if result.detected {
-        debug_eprintln!("  [DEBUG] HTTP redirect detection complete: detected={}, status={:?}, chain_len={}, cert_extracted={}",
+        tracing::debug!("HTTP redirect detection complete: detected={}, status={:?}, chain_len={}, cert_extracted={}",
             result.detected, result.status_code, result.redirect_chain.len(),
             result.final_destination_certificate.is_some());
         if let Some(ref err) = certificate_extraction_error {
-            debug_eprintln!("  [DEBUG] Certificate extraction warning: {}", err);
+            tracing::debug!("Certificate extraction warning: {}", err);
         }
     } else {
-        debug_eprintln!("  [DEBUG] No HTTP redirect detected for: {}", initial_url);
+        tracing::debug!("No HTTP redirect detected for: {}", initial_url);
     }
 
     Ok(result)
@@ -372,7 +342,7 @@ pub async fn detect_http_redirects_with_method(
 /// - TLS handshake fails
 /// - Certificate extraction fails
 async fn get_certificate_from_url(url: &str) -> Result<CertificateInfo> {
-    debug_eprintln!("  [DEBUG] get_certificate_from_url: connecting to {}", url);
+    tracing::debug!("get_certificate_from_url: connecting to {}", url);
     use rustls::pki_types::ServerName;
     use rustls::ClientConfig;
     use std::sync::Arc;
@@ -400,13 +370,13 @@ async fn get_certificate_from_url(url: &str) -> Result<CertificateInfo> {
 
     // Connect and get certificate
     let addr = format!("{}:{}", hostname, port);
-    debug_eprintln!("  [DEBUG] Connecting to {}:{}", hostname, port);
+    tracing::debug!("Connecting to {}:{}", hostname, port);
     let stream = TcpStream::connect(&addr).await.map_err(|e| {
         let err_msg = format!("Connection failed to {}: {}", addr, e);
-        debug_eprintln!("  [DEBUG] {}", err_msg);
+        tracing::debug!("{}", err_msg);
         anyhow!(err_msg)
     })?;
-    debug_eprintln!("  [DEBUG] TCP connection established to {}", addr);
+    tracing::debug!("TCP connection established to {}", addr);
 
     // Note: ServerName requires 'static lifetime in rustls 0.23
     // This is a known limitation - the memory will not be freed until program exit
@@ -416,23 +386,23 @@ async fn get_certificate_from_url(url: &str) -> Result<CertificateInfo> {
     let server_name =
         ServerName::try_from(hostname_static).map_err(|e| anyhow!("Invalid server name: {}", e))?;
 
-    debug_eprintln!("  [DEBUG] Performing TLS handshake to {}", hostname);
+    tracing::debug!("Performing TLS handshake to {}", hostname);
     let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {
         let err_msg = format!("TLS handshake failed for {}: {}", hostname, e);
-        debug_eprintln!("  [DEBUG] {}", err_msg);
+        tracing::debug!("{}", err_msg);
         anyhow!(err_msg)
     })?;
-    debug_eprintln!("  [DEBUG] TLS handshake successful");
+    tracing::debug!("TLS handshake successful");
 
     // Extract certificate
     if let Some(certs) = tls_stream.get_ref().1.peer_certificates() {
         if let Some(cert) = certs.first() {
-            debug_eprintln!("  [DEBUG] Certificate found, parsing...");
+            tracing::debug!("Certificate found, parsing...");
             let cert_parser = CertificateParser::new();
             match cert_parser.parse_certificate(cert.as_ref()) {
                 Ok(cert_info) => {
-                    debug_eprintln!(
-                        "  [DEBUG] Certificate parsed successfully: subject={}, issuer={}",
+                    tracing::debug!(
+                        "Certificate parsed successfully: subject={}, issuer={}",
                         cert_info.subject,
                         cert_info.issuer
                     );
@@ -440,15 +410,15 @@ async fn get_certificate_from_url(url: &str) -> Result<CertificateInfo> {
                 }
                 Err(e) => {
                     let err_msg = format!("Certificate parsing failed: {}", e);
-                    debug_eprintln!("  [DEBUG] {}", err_msg);
+                    tracing::debug!("{}", err_msg);
                     return Err(anyhow!(err_msg));
                 }
             }
         } else {
-            debug_eprintln!("  [DEBUG] Certificate list is empty");
+            tracing::debug!("Certificate list is empty");
         }
     } else {
-        debug_eprintln!("  [DEBUG] No peer certificates available");
+        tracing::debug!("No peer certificates available");
     }
 
     Err(anyhow!("No certificate found in TLS handshake"))
@@ -480,7 +450,7 @@ mod tests {
             Err(e) => {
                 // Errors are acceptable (network issues, etc.)
                 // Just log for debugging
-                debug_eprintln!("Test error (acceptable): {}", e);
+                tracing::debug!("Test error (acceptable): {}", e);
             }
         }
     }

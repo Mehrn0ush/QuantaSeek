@@ -55,11 +55,3 @@ pub use types::{
     HandshakeResult, OutputFormat, PqcAnalysis, PqcExtensions, ScanError, ScanResult,
     SecurityScore, SignatureNegotiationStatus, TlsFeatures,
 };
-
-/// Returns true if verbose/debug output is requested (QUANTASEEK_DEBUG=1 or --verbose).
-/// When false, [DEBUG] and progress messages are suppressed for production-friendly output.
-pub fn verbose() -> bool {
-    std::env::var("QUANTASEEK_DEBUG")
-        .map(|v| v != "0")
-        .unwrap_or(false)
-}

@@ -392,11 +392,10 @@ impl PqcDetector {
 
         // If TLS 1.2 is detected, disable PQC detection and enable classical fallback
         if result.tls_version == "1.2" {
-            if crate::verbose() {
-                println!(
-                    "TLS 1.2 detected - disabling PQC detection and enabling classical fallback"
-                );
-            }
+            tracing::debug!(
+                "TLS 1.2 detected - disabling PQC detection and enabling classical fallback"
+            );
+
             analysis.pqc_detected = false;
             analysis.hybrid_detected = false;
             analysis.classical_fallback_available = true;
