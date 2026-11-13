@@ -1,7 +1,8 @@
 # QuantaSeek Roadmap
 
 *Written 2026-11-13, at the end of Phase 0 (audit) and Phase 1 (foundation),
-on branch `phase1-foundation`.*
+on branch `phase1-foundation`. Updated the same day after milestone M1
+(Truthful output) on branch `m1-truthful-output`: see §1.6 and §5 M1.*
 
 This document has nine parts:
 
@@ -63,17 +64,17 @@ the reality.
 | Claim | Reality |
 |---|---|
 | "Production-ready", "100% accurate certificate analysis", "no mock data" | Several reported values were defaults or constants presented as data (below). |
-| Four client profiles: Classic, Hybrid, MaxPQC, Fallback | Every profile sends the identical rustls default ClientHello [read]. `-p classic` still negotiated `X25519MLKEM768` with google.com [ran]. The profile "fallback chain" repeats the same handshake. |
+| Four client profiles: Classic, Hybrid, MaxPQC, Fallback | Every profile sends the identical rustls default ClientHello [read]. `-p classic` still negotiated `X25519MLKEM768` with google.com [ran]. The profile "fallback chain" repeats the same handshake. **Fixed in M1** (93b8a38): profiles configure real group lists. |
 | "Classic = TLS 1.2 only" | It still offers TLS 1.3 and X25519MLKEM768 [read, ran]. |
-| QUIC support with certificate extraction | No QUIC handshake ever happens. `perform_quic_with_cert_extraction` is a stub returning `None`; quinn was a dependency but unused (removing it changed nothing) [read, ran]. "QUIC" results are TCP/TLS handshakes labelled `connection_type: "quic"` with `tls_version` hard-coded to `"1.3"`. A target counts as "QUIC" because of hostname substrings. |
+| QUIC support with certificate extraction | No QUIC handshake ever happens. `perform_quic_with_cert_extraction` is a stub returning `None`; quinn was a dependency but unused (removing it changed nothing) [read, ran]. "QUIC" results are TCP/TLS handshakes labelled `connection_type: "quic"` with `tls_version` hard-coded to `"1.3"`. A target counts as "QUIC" because of hostname substrings. **Removed in M1** (601a7b6); QUIC is listed as not implemented. |
 | Detects Dilithium/Falcon/SPHINCS+ certificates | It matched draft or invented OIDs and codepoints (§1.4). It would not have recognised a real FIPS 204 ML-DSA certificate signed with RFC 10073 composite OIDs. |
 | PQC KEM/KEM_GROUP extensions (0xFE00/0xFE01, 0xFE50/0xFE51) | These extensions do not exist in any registry. They were never sent; tests asserted they were "offered" via a helper that nothing called. |
 | `kem_negotiation.client_offered` | A per-profile list (Kyber768, ML-KEM-512, ML-KEM-1024, …) that the ClientHello never contained. Fixed in Phase 1. |
-| `hybrid_details.efficiency`, `fallback_analysis` | Constants: 150 ms overhead, 1024 bytes, 25% CPU, 2048 bytes memory, `time_penalty_ms: 200`, `trigger_reason: "PQC handshake failed, falling back to classical"`. They are emitted even when nothing failed [read]. **Still present.** |
-| Performance "overhead analysis", "percentile" | Lookup tables keyed on algorithm name and certificate size, not measurements [read]. **Still present.** |
-| Session tickets / OCSP / PSK / early data | Hard-coded `false`, which produces "Session tickets not enabled" recommendations [read, ran]. **Still present.** |
-| Certificate for the scanned host | After the handshake, HTTP redirects are followed and the final destination's certificate **replaces** the target's. Scanning `google.com` reports `www.google.com`'s certificate [ran]. **Still present.** |
-| `host:port` targets | `example.com:443` fails with `connection_failed`. The handshake is always to port 443, whatever port the probe used [ran, read]. **Still present.** |
+| `hybrid_details.efficiency`, `fallback_analysis` | Constants: 150 ms overhead, 1024 bytes, 25% CPU, 2048 bytes memory, `time_penalty_ms: 200`, `trigger_reason: "PQC handshake failed, falling back to classical"`. They are emitted even when nothing failed [read]. **Removed in M1** (c76b46c). |
+| Performance "overhead analysis", "percentile" | Lookup tables keyed on algorithm name and certificate size, not measurements [read]. **Removed in M1** (c76b46c). |
+| Session tickets / OCSP / PSK / early data | Hard-coded `false`, which produces "Session tickets not enabled" recommendations [read, ran]. **Removed in M1**; listed in `not_implemented` instead (c76b46c). |
+| Certificate for the scanned host | After the handshake, HTTP redirects are followed and the final destination's certificate **replaces** the target's. Scanning `google.com` reports `www.google.com`'s certificate [ran]. **Fixed in M1** (8cd3cf1): redirects are opt-in and reported separately. |
+| `host:port` targets | `example.com:443` fails with `connection_failed`. The handshake is always to port 443, whatever port the probe used [ran, read]. **Fixed in M1** (65a5e07). |
 | Certificate Transparency lookup | A stub that returns `None` [read]. |
 | RSA key size | The hand-rolled DER parser assumed short-form lengths, so it failed on every real RSA key and silently defaulted to 2048 [read]. Fixed in Phase 1. |
 | Certificate validation score | `u8` arithmetic could subtract 115 from 100. That panics in debug builds; in release it wraps, so an expired, mismatched certificate could score 100 [read]. Fixed, with a regression test. |
@@ -149,6 +150,42 @@ not. It is handled by the provenance model in M1.
 whole file into one string, `fromjson?` fails silently on it, and that is why
 `success-summary-*.json` was 0 bytes. The fix is to drop `-s` from the first jq
 and pipe into `jq -s`. Not fixed, because the script is archived; M2 replaces it.
+
+### 1.6 Milestone M1 changes (branch `m1-truthful-output`)
+
+| Commit | Change |
+|---|---|
+| 8a77cee | Scan orchestration moved into `quanta_seek::scan`; injectable trust anchors; in-process rustls test servers (`tests/support`). **Pre-existing bug:** the client Finished was never flushed, so servers never completed the handshake the scanner called complete |
+| 65a5e07 | `host:port`, `[v6]:port` and bare IPv6 targets; the handshake uses that port |
+| f25a3a2 | `--sni` |
+| 601a7b6 | Fake QUIC path, hostname heuristics, issuer-name "mock certificate" filters, `--tls12` and the CT stub removed. A handshake failure after TCP connect now sets `error` |
+| 8cd3cf1 | Redirect following is opt-in (`--follow-redirects`) and reported in `http_redirect`; the target certificate is never replaced |
+| 93b8a38 | Real profiles (`default`, `classical`, `hybrid`, `mlkem`, `all`). Outcomes classified by error type into `server_result` / `network` / `scanner`, with inferred interpretations. **Pre-existing bug:** read errors were flattened to strings, so timeouts were unclassifiable |
+| 1ec1b1b | `ScanOptions::connect_to`; hostname-independence test |
+| c76b46c | Output replaced by schema v0 (`schema/scan-result.v0.json`) with observed / derived / inferred / not-implemented provenance. Full chain, HelloRetryRequest, TLS 1.2 signature scheme and ServerHello evidence added. Scoring and every estimated field removed; JSON Lines output; default port 443 only |
+| (this commit) | README and ROADMAP updated for M1 |
+
+**Regressions found during M1.**
+- *From Phase 1:* none confirmed in behaviour. The two pre-existing bugs above
+  (unflushed Finished, flattened I/O errors) predate Phase 1, but Phase 1 did
+  not catch them because it added no integration tests.
+- *Introduced in M1 and fixed before commit:* the rewritten handshake loop used
+  a 16 KiB read buffer, but rustls `read_tls` consumes at most 4096 bytes per
+  call (`READ_SIZE` in the rustls deframer). Larger server flights were
+  truncated and timed out. The live before/after run caught this on
+  microsoft.com; it is now covered by `large_server_flight_is_read_completely`.
+
+**Before and after, same five hosts [ran].** Baselines were recorded with the
+Phase 1 binary before any M1 change.
+- Before: 3 of 5 (google.com, microsoft.com and cloudflare.com) reported
+  their redirect destination's `www.` certificate as the target's. Each output had 30 top-level fields, including a weighted score and
+  estimated metrics.
+- After: all 5 report the target's own chain (3–4 certificates), the
+  negotiated group X25519MLKEM768 (`hybrid`, RFC 10024), the server signature
+  scheme, and derived PQC values with their basis.
+- `example.com:443`: `connection_failed` before, `completed` after.
+- `-p standard google.com` → X25519MLKEM768 before; `-p classical google.com`
+  → x25519 after.
 
 ---
 
@@ -269,39 +306,53 @@ with M4.
 Every milestone keeps the provenance rule: each reported value is `observed`,
 `inferred` (with the inference basis), `not_observable`, or `not_implemented`.
 
-### M1: Truthful output (about 1–2 weeks)
+### M1: Truthful output — done 2026-11-13 (branch `m1-truthful-output`)
 
-Scope:
-- **Ports.** Handshake on the probed port; support `host:port` targets and
-  IPv6 literals; add SNI override.
-- **Redirects.** Never replace the target certificate. Report redirect
-  certificates in a separate `redirect_chain[].certificate`, or drop redirect
-  following from the default scan (opt-in `--follow-redirects`).
-- **Profiles.** Make them real by configuring rustls `kx_groups` per profile.
-  For example, `classic` = x25519/secp256r1/secp384r1 and `pqc-only` =
-  MLKEM768/MLKEM1024, plus SecP256r1MLKEM768 for the hybrid profile. Or remove
-  profiles in favour of M3. Owner decision D7.
-- **Estimated fields.** Remove the fixed constants (efficiency, overhead,
-  fallback penalty, percentile, extension lengths, hard-coded TLS features).
-  Report measured values or `null` with `provenance: not_implemented`.
-- **Heuristics.** Remove hostname-substring heuristics: QUIC detection,
-  "experimental" scoring, TLS 1.2 auto-enable.
-- **QUIC.** Remove the fake QUIC path until M3 or M6 delivers real QUIC.
-- **Provenance.** Add a provenance enum to every analysis field. Fix the
-  `pqc_signature_observed` "offered" bug.
-- **Schema.** Publish `schema/scan-result.v0.json` (JSON Schema 2020-12) and
-  validate output against it in tests.
-- **Batch output.** Make it JSON Lines on stdout.
+Delivered as scoped above (§1.6): ports and IPv6, SNI override, opt-in
+redirects with a separate field, real profiles, estimated fields and scoring
+removed, hostname heuristics and the fake QUIC path removed, provenance on
+every derived or inferred value, schema v0 published and validated, JSON
+Lines output. The old `pqc_signature_observed` "offered" bug is gone with the
+code that contained it; `pqc.handshake_signature` replaces it.
 
-Acceptance (runnable):
-- `quantaseek -q example.com:443 | jq -e '.handshake_complete == true'`
-- `quantaseek -q google.com | jq -e '.certificate.san | test("(^|, )google\\.com(,|$)")'` (the target's own certificate)
-- `quantaseek -q -p classic <testbed-x25519mlkem768-and-x25519> | jq -e '.key_exchange == ["x25519"]'` (after M2, or a local rustls server in a unit-integration test)
-- `git grep -nE 'time_penalty_ms: Some\(200\)|Some\(150\) // Typical|Some\(25\.0\)' src` returns nothing
-- `cargo test` includes a schema-validation test over golden outputs
-- `git grep -n 'contains("demo")\|oqstest.net\|duckdns' src` returns nothing
+Acceptance results [ran, 2026-11-13]. Checks 1 and 2 referred to v-pre-0 field
+names that schema v0 renamed. The original form fails for that reason only;
+the v0 form is now the criterion.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `quantaseek -q example.com:443 \| jq -e '.outcome.status == "completed" and .target.port == 443'` | pass (original `.handshake_complete` form: field no longer exists) |
+| 2 | `quantaseek -q google.com \| jq -e '.certificate_chain[0].san_dns \| index("google.com") != null'` | pass (original `.certificate.san` form: field no longer exists) |
+| 3 | `cargo test --test profiles classical_profile_offers_no_pq_group` (local rustls server offering X25519MLKEM768 + x25519; the M2 testbed does not exist yet) | pass |
+| 4 | `git grep -nE 'time_penalty_ms: Some\(200\)\|Some\(150\) // Typical\|Some\(25\.0\)' src` | no matches |
+| 5 | `cargo test --test schema` (committed schema == generated; four outputs validated with `jsonschema`; golden files) | pass |
+| 6 | `git grep -n 'contains("demo")\|oqstest.net\|duckdns' src` | no matches |
+
+Left for later milestones, because they need the prober or the testbed:
+- **Chain reporting on validation failure.** A chain that fails webpki
+  validation (expired, wrong name, SLH-DSA / composite / Ed448 signatures that
+  webpki 0.103 cannot verify) is reported only as `certificate_rejected`. The
+  verifier sees the certificates before rejecting them, so they could be
+  reported with `validated: false`. → **M3**, together with independent chain
+  analysis.
+- **Confirming *why* a restrictive profile was rejected** (no shared group vs.
+  other negotiation failure). The cause is reported as `inferred`, and only
+  per-group probing can confirm it. → **M3**.
+- **Groups rustls cannot offer** (SecP384r1MLKEM1024, MLKEM512, SM2/X448
+  hybrids). → **M3** prober.
+- **Fixtures with ML-DSA, SLH-DSA, composite and HashML-DSA certificates**,
+  needed to test `family` classification end to end (rcgen cannot issue them
+  in the configuration used). → **M2**.
+- **IPv6 connection test.** Parsing is tested; a `[::1]` handshake test is not
+  written yet. → **M2**.
+- **Exit codes for CI gating.** The exit code is still 0 whenever output was
+  produced. → **M4** (finding thresholds).
 
 ### M2: Deterministic testbed (about 2–3 weeks)
+
+M1 added in-process rustls servers (`tests/support`), which cover anything
+rustls can serve. M2 adds the servers rustls cannot provide (OpenSSL 3.5,
+other group sets, PQC certificate types).
 
 Scope:
 - **`testbed/compose.yml`** with pinned images and digests, each server on
@@ -615,16 +666,14 @@ plan) rather than relicensing the scanner.
    proprietary. This decides what lives in this repository.
 3. **D3 Contributions.** DCO (recommended with Apache-2.0) or CLA (needed for
    dual licensing).
-4. **D4 Default branch.** The work is on `main`, but the remote default is
-   `master`. Pick one, and say whether `dev` is still used. This branch was cut
-   from `main`.
-5. **D5 Output compatibility.** Is breaking the current JSON shape acceptable in
-   M1? This audit recommends yes: no stable consumers are known, and the current
-   shape contains fabricated fields.
-6. **D6 HTTP redirect following.** Remove it from the default scan, make it
-   opt-in, or keep it with a separate certificate field.
-7. **D7 Profiles in M1.** Make them real (configure rustls groups) or remove
-   them and wait for the M3 prober.
+4. **D4 Default branch.** *Decided:* `main`. Still open: whether the remote
+   default `master` and the `dev` branch should be retired.
+5. **D5 Output compatibility.** *Decided:* breaking is acceptable; published as
+   schema v0 with a `schema_version` field.
+6. **D6 HTTP redirect following.** *Decided:* off by default, opt-in with
+   `--follow-redirects`, reported in a separate field.
+7. **D7 Profiles.** *Decided:* real profiles limited to groups rustls
+   implements. Done in M1.
 8. **D8 Policy-pack priority.** Which jurisdictions first? Suggested: NIST IR
    8547 (open) and CNSA 2.0, then BSI and ANSSI.
 9. **D9 Live-scan policy for research and marketing.** Which public hosts may be
@@ -639,7 +688,7 @@ plan) rather than relicensing the scanner.
 
 ## 9. Appendix
 
-### 9.1 Verification log (Phase 0 and Phase 1)
+### 9.1 Verification log (Phase 0, Phase 1 and M1)
 
 - **Builds and tools.**
   - Builds: `cargo build`, `cargo test`, `cargo clippy --all-targets`,
@@ -654,6 +703,16 @@ plan) rather than relicensing the scanner.
 - **rustls capabilities:** read from
   `~/.cargo/registry/src/*/rustls-0.23.46/src/crypto/aws_lc_rs/{mod.rs,pq/mod.rs}`.
 - **Unused dependencies:** confirmed by removing them and building.
+
+- **M1 live scans** (2026-11-13): the same five hosts before (Phase 1 binary)
+  and after; `example.com:443`; `-p standard`/`-p classical google.com`;
+  `--follow-redirects google.com`; `-p mlkem example.com` (→
+  `handshake_rejected`, alert `HandshakeFailure`); `-p classical
+  pq.cloudflareresearch.com` (→ x25519). Each was one handshake sequence,
+  a few seconds apart. microsoft.com was scanned three extra times while
+  diagnosing the read-buffer regression.
+- **M1 source reads:** rustls 0.23.46 `ALL_KX_GROUPS` and `READ_SIZE`;
+  rustls-webpki 0.103.17 supported signature algorithms.
 
 ### 9.2 Primary sources consulted (2026-11-13)
 

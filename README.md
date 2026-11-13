@@ -1,47 +1,19 @@
 # QuantaSeek
 
-QuantaSeek is a command-line TLS scanner, written in Rust, that connects to an
-endpoint, completes a real TLS handshake with [rustls](https://github.com/rustls/rustls),
-and reports which key exchange group and certificate algorithms were
-negotiated. Its focus is post-quantum cryptography (PQC): whether an endpoint
-negotiates a hybrid ML-KEM group such as `X25519MLKEM768`, and whether its
-certificate uses ML-DSA, SLH-DSA or composite ML-DSA.
+QuantaSeek is a command-line TLS scanner, written in Rust. It connects to an
+endpoint, completes a real TLS handshake with
+[rustls](https://github.com/rustls/rustls), and reports what was negotiated:
+TLS version, cipher suite, key-exchange group, the server's signature scheme,
+and the certificate chain. Its focus is post-quantum cryptography (PQC):
+whether an endpoint negotiates a hybrid or pure ML-KEM group, and whether its
+certificates and handshake signatures are ML-DSA, SLH-DSA or composite
+ML-DSA.
 
-**Status: pre-1.0 research prototype.** The output format is not stable and
-several reported fields are estimates rather than measurements (see
-[Limitations](#limitations)). Do not use it as the sole basis for an audit
-finding yet. [ROADMAP.md](ROADMAP.md) describes the plan to get there.
-
-## What it observes
-
-For each target, QuantaSeek makes one full handshake through rustls (aws-lc-rs
-provider) and reports:
-
-| Field | Source | Observed or inferred |
-|---|---|---|
-| `tls_version`, `cipher_suite` | rustls / raw ServerHello | Observed |
-| `key_exchange` (e.g. `X25519MLKEM768`) | `key_share` in the raw ServerHello, or the group rustls reports as negotiated | Observed |
-| `pqc_detected`, `analysis.hybrid_detected` | Negotiated group looked up in the IANA registry | Derived from an observed value |
-| `certificate.*` (leaf only) | Peer certificate parsed with x509-parser | Observed, but see the redirect limitation |
-| `analysis.pqc_signature_used` (TLS 1.3) | Signature scheme in the server's CertificateVerify, captured from the rustls verifier | Observed |
-
-Codepoints and OIDs come from one table in [`src/constants.rs`](src/constants.rs),
-where each entry cites its source (IANA TLS registries, NIST CSOR, RFC 10024,
-RFC 9881, RFC 9909, RFC 9935, RFC 10073). It was last checked against those
-sources on 2026-11-13.
-
-### What it can and cannot negotiate
-
-QuantaSeek can only report a group that rustls itself offers. With rustls
-0.23.46 and the `prefer-post-quantum` feature, the ClientHello offers, in order:
-`X25519MLKEM768`, `x25519`, `secp256r1`, `secp384r1`. As a result:
-
-- A server that supports `X25519MLKEM768` is reported as PQC-capable.
-- A server that supports **only** `SecP256r1MLKEM768`, `SecP384r1MLKEM1024`,
-  pure `MLKEM768`/`MLKEM1024`, or another PQC group negotiates a classical
-  group (or fails). It is reported as classical. This is a false negative.
-- QuantaSeek does not enumerate the groups a server supports, its preference
-  order, or its HelloRetryRequest and downgrade behaviour.
+**Status: pre-1.0.** The output format is versioned (schema `0`) but can
+still change. Every value in the output is labelled as observed, derived or
+inferred, or is listed as not implemented (see [Output](#output)). What the
+scanner cannot see is listed under [Limitations](#limitations).
+[ROADMAP.md](ROADMAP.md) describes what comes next.
 
 ## Build
 
@@ -56,112 +28,152 @@ cargo build --release
 ## Usage
 
 ```bash
-# One target; JSON result on stdout, progress on stderr
+# One target; one JSON object on stdout, progress on stderr
 ./target/release/quantaseek example.com
 
-# Only the JSON result (stderr limited to errors)
-./target/release/quantaseek -q example.com | jq '.key_exchange, .pqc_detected'
+# Only the result (stderr limited to errors)
+./target/release/quantaseek -q example.com | jq '.tls.key_exchange.name, .pqc.key_exchange.value'
 
-# Several targets, human-readable summary
+# Explicit port, IPv6, or scanning by IP while validating a DNS name
+./target/release/quantaseek example.com:8443 '[2001:db8::1]:443'
+./target/release/quantaseek --sni www.example.com 192.0.2.10
+
+# Does the server accept a ClientHello that offers only pure ML-KEM?
+./target/release/quantaseek -p mlkem example.com
+
+# Human-readable output for several targets
 ./target/release/quantaseek -f text example.com cloudflare.com
-
-# Debug logging on stderr
-./target/release/quantaseek -v example.com
 ```
-
-Options (`quantaseek --help`):
 
 | Option | Meaning |
 |---|---|
-| `-f, --format json\|text` | Output format (default `json`) |
-| `-p, --profile <name>` | Profile label recorded in the output. It does not change the ClientHello (see Limitations). |
-| `--tls12` | When no certificate was obtained, retry with a separate handshake to fetch one |
+| `-p, --profile <name>` | Which key-exchange groups the ClientHello offers (table below). Default `default` |
+| `-f, --format json\|text` | JSON Lines (one object per target) or text. Default `json` |
+| `--sni <name>` | Name sent in SNI and validated against the certificate. Default: the target host |
+| `--follow-redirects` | After the handshake, follow HTTP redirects and report them separately (off by default) |
 | `--connect-timeout <SECS>` | TCP connect timeout (default 5) |
 | `--handshake-timeout <MS>` | TLS read/write timeout (default 5000) |
+| `--print-schema` | Print the output's JSON Schema and exit |
 | `-q, --quiet` / `-v, --verbose` | Log level on stderr (`-vv` for trace) |
-| `-V, --version` | Version from `Cargo.toml` |
 
-Results go to stdout; all logging goes to stderr.
+Results go to stdout and logs to stderr. A target with no port is scanned on
+443 only.
+
+### Profiles
+
+Each profile changes the ClientHello. Profiles use only groups that the linked
+rustls 0.23.46 / aws-lc-rs 1.19.0 implement. rustls sends a key share for the
+first group, so a server that wants a different offered group answers with a
+HelloRetryRequest (reported as `tls.hello_retry_request`).
+
+| Profile | Groups offered, in order | TLS versions |
+|---|---|---|
+| `default` | X25519MLKEM768, x25519, secp256r1, secp384r1 | 1.3, 1.2 |
+| `classical` | x25519, secp256r1, secp384r1 | 1.3, 1.2 |
+| `hybrid` | X25519MLKEM768, SecP256r1MLKEM768 | 1.3 |
+| `mlkem` | MLKEM1024, MLKEM768 | 1.3 |
+| `all` | X25519MLKEM768, SecP256r1MLKEM768, MLKEM1024, MLKEM768, x25519, secp256r1, secp384r1 | 1.3, 1.2 |
+
+One profile means one handshake. To compare a server's behaviour across
+profiles, run the scanner once per profile.
+
+## Output
+
+Each target produces one JSON object (schema version `"0"`). The full schema is
+[`schema/scan-result.v0.json`](schema/scan-result.v0.json), and
+`quantaseek --print-schema` prints the same schema. Tests check that the
+committed file matches the code.
+
+How each part of the output is sourced:
+
+| Part | Provenance |
+|---|---|
+| `tls` (version, cipher suite, key exchange, HelloRetryRequest, server signature scheme) | **Observed** in the handshake |
+| `certificate_chain` | **Observed**: every certificate the server sent, leaf first. Algorithms are named from cited OID tables |
+| `evidence.server_hellos_hex` | **Observed**: the raw ServerHello (and HelloRetryRequest) messages |
+| `http_redirect` | **Observed**, only with `--follow-redirects`. Never replaces the target's certificate |
+| `pqc.*` | **Derived**: each has a `value`, `provenance: "derived"`, and the `basis` (the registry rule applied to an observed value) |
+| `outcome.error.interpretation` | **Inferred**: the likely cause of a failure, labelled `provenance: "inferred"` |
+| `not_implemented` | What this version does not observe at all. An absent value is never a "no" |
+
+A failed scan carries `outcome.error`, with a stable `code` and a `category`
+(examples: [`tests/golden/`](tests/golden/)):
+
+| Category | Codes | Meaning |
+|---|---|---|
+| `server_result` | `handshake_rejected` (with the TLS `alert`), `certificate_rejected`, `protocol_error`, `connection_closed` | The server answered. The answer is a finding about the server, not a scan failure |
+| `network` | `dns_failed`, `connection_refused`, `connection_timeout`, `handshake_timeout`, `connection_reset`, `connection_failed` | No usable answer |
+| `scanner` | `invalid_target`, `handshake_failed`, `unknown` | Input error, or a failure the scanner did not classify |
+
+For example, `-p mlkem` against a server without ML-KEM usually gives
+`handshake_rejected` with alert `HandshakeFailure`, plus an inferred
+interpretation. The scanner cannot confirm from one handshake that the cause
+was the groups rather than another negotiation failure.
+
+Codepoints and OIDs come from [`src/constants.rs`](src/constants.rs), where
+each entry cites its source (IANA TLS registries, NIST CSOR, RFC 10024, RFC
+9881, RFC 9909, RFC 9935, RFC 10073). The table was last checked on 2026-11-13.
 
 ## Limitations
 
-These were confirmed on 2026-11-13 by running the scanner or reading the code.
-They are not fixed yet, and each one is scheduled in [ROADMAP.md](ROADMAP.md).
+These describe the tool after milestone M1, as of 2026-11-13.
 
-**Detection**
-- Profiles (`standard`, `hybrid-pqc`, `pqc-only`, `cloudflare-pqc`) all send
-  the same ClientHello. Run on 2026-11-13, `-p standard` still negotiated
-  `X25519MLKEM768` against google.com. The profile "fallback chain" therefore
-  repeats an identical handshake.
-- Only the leaf certificate is analysed. Intermediates and the root are not
-  inspected for PQC or composite algorithms.
-- A server whose chain does not validate against the webpki-roots bundle fails
-  the handshake. It is reported as a connection failure, not as a certificate
-  finding.
+**What the handshake can test**
+- Only the groups in the table above can be offered. A server that supports
+  only SecP384r1MLKEM1024, MLKEM512, curveSM2MLKEM768 or MLKEM1024X448 looks
+  like it supports no PQC group, which is a false negative.
+- One handshake shows only the group the server picked. QuantaSeek does not
+  enumerate supported groups, server preference order, downgrade behaviour or
+  tolerance of large ClientHellos. That is the per-group prober in ROADMAP M3.
+  A `handshake_rejected` under a restrictive profile is therefore reported with
+  an *inferred* cause, not a confirmed one.
+- QUIC is not implemented. Every result is TCP/TLS.
+- ALPN is not offered. OCSP stapling, session resumption, early data,
+  Certificate Transparency and revocation are not observed (all listed in
+  `not_implemented`).
 
-**Targeting**
-- `host:port` targets do not work. `example.com:443` fails with
-  `connection_failed`, and the handshake is always made to port 443, whatever
-  port the reachability probe used.
-- A target is treated as "experimental/QUIC" because of substrings in its
-  hostname (for example `quic`, `oqstest.net`, `duckdns.org`). Hostnames
-  containing `test`, `demo` or `experimental` also change fallback behaviour.
+**Certificates**
+- The chain is validated by rustls/webpki against the webpki-roots bundle.
+  webpki 0.103 verifies ECDSA, Ed25519, RSA and ML-DSA-44/65/87 signatures,
+  but not SLH-DSA, composite ML-DSA or Ed448. A server whose chain uses those
+  is reported as `certificate_rejected`, and its chain is not reported.
+- Any chain that fails validation (expired, wrong name, unknown issuer) is
+  likewise reported only as `certificate_rejected`, with the rustls reason in
+  `message`. The certificates themselves are not reported.
+- `pqc.certificate_chain` counts a certificate as post-quantum when its own
+  signature algorithm is ML-DSA, SLH-DSA or composite ML-DSA. Whether the
+  leaf's key is post-quantum shows in `pqc.handshake_signature`.
 
-**QUIC**
-- No QUIC handshake is performed. The scanner has no QUIC dependency. Results
-  tagged `"connection_type": "quic"` come from a TCP/TLS handshake to the same
-  host, and their `tls_version` is hard-coded to `1.3`.
-
-**Certificates and redirects**
-- After the handshake, QuantaSeek follows HTTP redirects with a separate HTTPS
-  client. If the final destination's certificate differs, it **replaces** the
-  target's certificate in the report. Run on 2026-11-13, scanning `google.com`
-  reported the certificate of `www.google.com`.
-- Certificate Transparency lookup is a stub that always returns nothing.
-
-**Reported values that are not measurements**
-- `performance_analysis.overhead_analysis`, `analysis.hybrid_details.efficiency`
-  and `fallback_analysis` (for example `time_penalty_ms: 200` and
-  `trigger_reason: "PQC handshake failed..."`) are fixed estimates, not
-  measured values.
-- `extension_usage` lists extensions with assumed lengths, not parsed ones.
-- `extension_map` and `tls_features` hard-code session ticket, OCSP, PSK and
-  early-data status as absent.
-  "Session tickets not enabled" recommendations follow from that, not from the
-  server.
-- `security_score` is a fixed weighted formula (TLS 30 / certificate 25 / PQC
-  45). It is not tied to any published policy. Some of its PQC sub-scores label
-  `X25519MLKEM768` as "Level 1 / 128 bits", which is wrong: ML-KEM-768 is NIST
-  Category 3.
-
-## Accuracy policy
-
-The project's rule, applied from Phase 1 onwards:
-
-- Every codepoint and OID cites its source.
-- A value that was inferred rather than observed must be labelled as inferred.
-- When the scanner cannot observe something, it reports "unknown" or "not
-  implemented" instead of a default.
-
-Where current output breaks this rule, the breach is listed above. Fixing those
-cases is the first milestone in the roadmap.
+**Operation**
+- Targets are scanned one after another. There is no concurrency, no rate
+  limiting, and no target-file or CIDR input yet (ROADMAP M5).
+- The exit code is 0 whenever output was produced, even if a target failed.
+  Check `outcome.status`.
 
 ## Responsible use
 
-Scan only systems you own or are authorised to test. Each scan opens several
-TCP connections and makes HTTPS requests (redirect detection). There is no rate
-limiting yet, so do not run it against third-party hosts at volume.
+Scan only systems you own or are authorised to test. A default scan opens one
+TCP connection and performs one handshake per target; `--follow-redirects`
+adds HTTPS requests. There is no rate limiting yet, so do not run it against
+third-party hosts at volume.
 
 ## Development
 
 ```bash
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets          # no network access needed
-cargo test -- --ignored           # network-dependent tests
+cargo test --all-targets          # loopback only, no internet access
 cargo audit
 cargo deny check
 ```
+
+The integration tests (`tests/`) run in-process rustls servers on 127.0.0.1
+with throwaway CAs and chosen key-exchange groups. They cover ports, SNI,
+profiles, outcome classification, redirects and the output schema. To refresh
+the golden files after an intended output change, run
+`UPDATE_GOLDEN=1 cargo test --test schema`. After changing the report types,
+regenerate the schema with
+`quantaseek --print-schema > schema/scan-result.v0.json`.
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs all of these on
 Linux and macOS, and checks the MSRV (1.88).
