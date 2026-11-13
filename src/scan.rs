@@ -20,6 +20,67 @@ use tokio::net::TcpStream;
 /// Ports probed for reachability, in order.
 pub const DEFAULT_PORTS: &[u16] = &[443, 8443, 4433, 9443, 4443];
 
+/// A scan target: host plus optional port, parsed from user input.
+///
+/// Accepts `host`, `host:port`, `[v6addr]:port`, `[v6addr]` and bare IPv6
+/// literals (more than one colon, no brackets: no port).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub host: String,
+    pub port: Option<u16>,
+}
+
+impl Target {
+    pub fn parse(input: &str) -> std::result::Result<Self, String> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Err("empty target".to_string());
+        }
+        let parse_port = |p: &str| {
+            p.parse::<u16>()
+                .ok()
+                .filter(|p| *p != 0)
+                .ok_or_else(|| format!("invalid port '{p}' in target '{input}'"))
+        };
+        if let Some(rest) = input.strip_prefix('[') {
+            let (host, after) = rest
+                .split_once(']')
+                .ok_or_else(|| format!("unclosed '[' in target '{input}'"))?;
+            let port = match after {
+                "" => None,
+                _ => Some(parse_port(after.strip_prefix(':').ok_or_else(|| {
+                    format!("unexpected text after ']' in '{input}'")
+                })?)?),
+            };
+            return Ok(Self {
+                host: host.to_string(),
+                port,
+            });
+        }
+        match input.matches(':').count() {
+            0 => Ok(Self {
+                host: input.to_string(),
+                port: None,
+            }),
+            1 => {
+                let (host, port) = input.split_once(':').unwrap_or((input, ""));
+                if host.is_empty() {
+                    return Err(format!("missing host in target '{input}'"));
+                }
+                Ok(Self {
+                    host: host.to_string(),
+                    port: Some(parse_port(port)?),
+                })
+            }
+            // Bare IPv6 literal without brackets: no port.
+            _ => Ok(Self {
+                host: input.to_string(),
+                port: None,
+            }),
+        }
+    }
+}
+
 /// Run-wide scan settings.
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
@@ -198,24 +259,34 @@ pub async fn scan_target(
         }
     }
 
-    let ports_to_try = if is_experimental {
-        try_alternative_ports(target).await
-    } else {
-        opts.ports.clone()
+    let parsed = Target::parse(target).map_err(|e| anyhow::anyhow!(e))?;
+    let host = parsed.host.as_str();
+    let ports_to_try = match parsed.port {
+        Some(port) => vec![port],
+        None if is_experimental => try_alternative_ports(target).await,
+        None => opts.ports.clone(),
     };
 
     for port in ports_to_try.iter() {
         tried_ports.push(*port);
-        match try_connect(opts, target, *port).await {
+        match try_connect(opts, host, *port).await {
             Ok(stream) => {
                 connection_success = true;
-                tracing::info!("  Connected to {}:{}", target, port);
+                tracing::info!("  Connected to {}:{}", host, port);
 
                 // FIXED: Use the actual provided profile instead of overriding
                 let actual_profile = *profile;
 
-                match perform_scan_with_stream(opts, stream, target, &actual_profile, tls12_enabled)
-                    .await
+                match perform_scan_with_stream(
+                    opts,
+                    stream,
+                    target,
+                    host,
+                    *port,
+                    &actual_profile,
+                    tls12_enabled,
+                )
+                .await
                 {
                     Ok(scan_result) => {
                         result = scan_result;
@@ -255,17 +326,25 @@ pub async fn scan_target(
     }
 
     // Strategy 2: Try additional ports for experimental servers
-    if !connection_success && is_experimental {
+    if !connection_success && is_experimental && parsed.port.is_none() {
         let additional_ports = [853, 8530, 8531, 8532, 8533, 8534, 8535, 10443];
         for port in additional_ports.iter() {
             tried_ports.push(*port);
-            match try_connect(opts, target, *port).await {
+            match try_connect(opts, host, *port).await {
                 Ok(stream) => {
                     connection_success = true;
                     tracing::info!("  Connected to {}:{} (PQC port)", target, port);
 
-                    match perform_scan_with_stream(opts, stream, target, profile, tls12_enabled)
-                        .await
+                    match perform_scan_with_stream(
+                        opts,
+                        stream,
+                        target,
+                        host,
+                        *port,
+                        profile,
+                        tls12_enabled,
+                    )
+                    .await
                     {
                         Ok(scan_result) => {
                             result = scan_result;
@@ -381,11 +460,9 @@ pub async fn try_connect(
     hostname: &str,
     port: u16,
 ) -> Result<TcpStream, Box<dyn std::error::Error>> {
-    let addr = format!("{}:{}", hostname, port);
-
     let timeout = opts.connect_timeout;
 
-    match tokio::time::timeout(timeout, TcpStream::connect(&addr)).await {
+    match tokio::time::timeout(timeout, TcpStream::connect((hostname, port))).await {
         Ok(Ok(stream)) => {
             // Set TCP options for better performance
             stream.set_nodelay(true)?;
@@ -490,6 +567,8 @@ pub async fn perform_scan_with_stream(
     opts: &ScanOptions,
     _stream: TcpStream,
     target: &str,
+    host: &str,
+    port: u16,
     profile: &ClientProfile,
     tls12_enabled: bool,
 ) -> Result<ScanResult, Box<dyn std::error::Error>> {
@@ -534,8 +613,8 @@ pub async fn perform_scan_with_stream(
 
             // FIXED: Use perform_handshake instead of perform_tcp_tls_handshake to capture raw_server_hello
             // This ensures raw_server_hello is populated even for Classic profile
-            match try_connect(opts, target, 443).await {
-                Ok(stream) => handshake.perform_handshake(stream, target).await,
+            match try_connect(opts, host, port).await {
+                Ok(stream) => handshake.perform_handshake(stream, host).await,
                 Err(e) => {
                     last_error = Some(e.to_string());
                     if attempt_idx < fallback_chain.len() - 1 {
@@ -563,8 +642,8 @@ pub async fn perform_scan_with_stream(
 
             // Try to perform handshake with this profile
             // Always create a new connection for each attempt to avoid ownership issues
-            match try_connect(opts, target, 443).await {
-                Ok(new_stream) => handshake.perform_handshake(new_stream, target).await,
+            match try_connect(opts, host, port).await {
+                Ok(new_stream) => handshake.perform_handshake(new_stream, host).await,
                 Err(e) => {
                     last_error = Some(e.to_string());
                     if attempt_idx < fallback_chain.len() - 1 {

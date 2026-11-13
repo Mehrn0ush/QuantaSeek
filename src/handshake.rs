@@ -212,10 +212,10 @@ impl HandshakeEngine {
         let start_time = std::time::Instant::now();
 
         // Strip port if present for SNI/ServerName
-        let hostname_only = if let Some(colon_pos) = hostname.rfind(':') {
-            &hostname[..colon_pos]
-        } else {
-            hostname
+        // Accept a legacy "host:port" form, but never split an IPv6 literal.
+        let hostname_only = match hostname.split_once(':') {
+            Some((host, port)) if !port.contains(':') && port.parse::<u16>().is_ok() => host,
+            _ => hostname,
         };
 
         // Create TLS configuration with signature scheme capture
