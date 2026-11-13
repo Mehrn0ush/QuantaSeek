@@ -324,7 +324,8 @@ impl SecurityScorer {
 
     fn score_certificate_validation(&self, result: &ScanResult) -> u8 {
         if let Some(ref cert) = result.certificate {
-            let mut score = 100;
+            // Signed so stacked deductions cannot underflow a u8.
+            let mut score: i32 = 100;
 
             // Check for hostname validation
             if result
@@ -401,7 +402,7 @@ impl SecurityScorer {
                 }
             }
 
-            score.min(100)
+            score.clamp(0, 100) as u8
         } else {
             // No certificate available - this is normal for TLS 1.3
             if result.tls_version == "1.3" {
@@ -818,6 +819,33 @@ impl SecurityScorer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn certificate_validation_deductions_do_not_underflow() {
+        let mut result = ScanResult::new("www.example.org".to_string());
+        result
+            .analysis
+            .security_features
+            .push("Hostname Mismatch".to_string());
+        result.certificate = Some(crate::types::CertificateInfo {
+            subject: "other.example".to_string(),
+            issuer: "CA".to_string(),
+            public_key_algorithm: "RSA".to_string(),
+            signature_algorithm: "OID(1.2.3)".to_string(),
+            signature_algorithm_oid: None,
+            key_size: Some(6144),
+            // Not yet valid and expired at the same time: every deduction applies.
+            valid_from: "Fri, 01 Jan 2100 00:00:00 +0000".to_string(),
+            valid_to: "Thu, 01 Jan 1970 00:00:00 +0000".to_string(),
+            san: Some(vec!["a.example"; 201].join(", ")),
+            certificate_length_estimate: None,
+            algorithm_consistency: false,
+        });
+        assert_eq!(
+            SecurityScorer::new().score_certificate_validation(&result),
+            0
+        );
+    }
 
     #[test]
     fn test_score_key_exchange_levels() {

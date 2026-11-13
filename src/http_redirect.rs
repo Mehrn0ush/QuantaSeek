@@ -378,13 +378,8 @@ async fn get_certificate_from_url(url: &str) -> Result<CertificateInfo> {
     })?;
     tracing::debug!("TCP connection established to {}", addr);
 
-    // Note: ServerName requires 'static lifetime in rustls 0.23
-    // This is a known limitation - the memory will not be freed until program exit
-    // For production, consider using a connection pool or caching ServerName instances
-    let hostname_owned = Box::new(hostname.to_string());
-    let hostname_static: &'static str = Box::leak(hostname_owned);
-    let server_name =
-        ServerName::try_from(hostname_static).map_err(|e| anyhow!("Invalid server name: {}", e))?;
+    let server_name = ServerName::try_from(hostname.to_string())
+        .map_err(|e| anyhow!("Invalid server name: {}", e))?;
 
     tracing::debug!("Performing TLS handshake to {}", hostname);
     let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {

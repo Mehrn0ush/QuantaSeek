@@ -113,9 +113,12 @@ impl CertificateParser {
     fn extract_public_key_info(&self, subject_pki: &SubjectPublicKeyInfo) -> (String, Option<u32>) {
         let algorithm = self.oid_to_algorithm_name(&subject_pki.algorithm.algorithm);
         let key_size = match algorithm.as_str() {
-            "RSA" => self
-                .extract_rsa_key_size(&subject_pki.subject_public_key.data)
-                .ok(),
+            "RSA" => match subject_pki.parsed() {
+                Ok(x509_parser::public_key::PublicKey::RSA(rsa)) => {
+                    u32::try_from(rsa.key_size()).ok()
+                }
+                _ => None,
+            },
             // EC key size comes from the named-curve parameter, not the algorithm OID.
             "ECDSA" => subject_pki
                 .algorithm
@@ -150,86 +153,6 @@ impl CertificateParser {
             "1.3.101.113" => "Ed448".to_string(),        // RFC 8410
             _ => format!("OID({})", dotted),
         }
-    }
-
-    fn extract_rsa_key_size(&self, key_data: &[u8]) -> Result<u32> {
-        // Parse RSA public key from DER
-        if key_data.len() < 2 {
-            return Err(anyhow!(
-                "Invalid RSA key data: too short ({} bytes)",
-                key_data.len()
-            ));
-        }
-
-        // Skip the first byte (unused bits indicator for BIT STRING)
-        let data = if key_data[0] == 0 {
-            &key_data[1..]
-        } else {
-            key_data
-        };
-
-        // Parse SEQUENCE
-        if data.is_empty() || data[0] != 0x30 {
-            return Err(anyhow!(
-                "Expected SEQUENCE for RSA public key, got 0x{:02x}",
-                data[0]
-            ));
-        }
-
-        // Parse modulus (first INTEGER in the sequence)
-        let mut pos = 2; // Skip tag and length
-        if pos >= data.len() {
-            return Err(anyhow!("Data too short after SEQUENCE"));
-        }
-
-        if data[pos] != 0x02 {
-            return Err(anyhow!(
-                "Expected INTEGER for RSA modulus, got 0x{:02x}",
-                data[pos]
-            ));
-        }
-        pos += 1;
-
-        if pos >= data.len() {
-            return Err(anyhow!("Data too short after INTEGER tag"));
-        }
-
-        // Read length
-        let length = if data[pos] & 0x80 == 0 {
-            data[pos] as usize
-        } else {
-            let len_bytes = (data[pos] & 0x7f) as usize;
-            pos += 1;
-            if pos + len_bytes > data.len() {
-                return Err(anyhow!("Invalid RSA key length encoding"));
-            }
-            let mut length = 0u32;
-            for &byte in &data[pos..pos + len_bytes] {
-                length = (length << 8) | byte as u32;
-            }
-            length as usize
-        };
-        pos += 1;
-
-        if pos + length > data.len() {
-            return Err(anyhow!("Modulus data extends beyond available data"));
-        }
-
-        // Calculate actual modulus size in bits
-        // Account for leading zero byte if present (for padding)
-        let modulus_data = &data[pos..pos + length];
-        let actual_bits = if !modulus_data.is_empty() && modulus_data[0] == 0 {
-            (modulus_data.len() - 1) * 8
-        } else {
-            modulus_data.len() * 8
-        };
-
-        // Validate reasonable key size
-        if !(512..=8192).contains(&actual_bits) {
-            return Err(anyhow!("Unreasonable RSA key size: {} bits", actual_bits));
-        }
-
-        Ok(actual_bits as u32)
     }
 
     /// DNS names from the subjectAltName extension (RFC 5280 §4.2.1.6).

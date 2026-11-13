@@ -577,11 +577,8 @@ impl HandshakeEngine {
         use std::time::Duration;
 
         // Create ClientConnection for manual handshake processing
-        // In rustls 0.23, ServerName needs to be 'static - use Box::leak to create 'static reference
-        let hostname_owned = Box::new(hostname.clone());
-        let hostname_static: &'static str = Box::leak(hostname_owned);
-        let server_name = ServerName::try_from(hostname_static)
-            .map_err(|_| anyhow::anyhow!("Invalid server name"))?;
+        let server_name =
+            ServerName::try_from(hostname).map_err(|_| anyhow::anyhow!("Invalid server name"))?;
 
         let mut client = ClientConnection::new(config, server_name)?;
 
@@ -828,8 +825,9 @@ impl HandshakeEngine {
                 for (target_host, target_port) in &fallback_attempts {
                     // Add delay between retries (exponential backoff from config)
                     if attempt > 0 {
-                        let backoff_delay = self.config.retry_base_delay_ms
-                            * (self.config.retry_backoff_multiplier as u64).pow(attempt);
+                        let backoff_delay = self.config.retry_base_delay_ms.saturating_mul(
+                            (self.config.retry_backoff_multiplier as u64).saturating_pow(attempt),
+                        );
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_delay)).await;
                     }
 
@@ -1477,10 +1475,7 @@ impl HandshakeEngine {
             .await
             .map_err(|e| anyhow::anyhow!("TLS 1.2 connection failed: {}", e))?;
 
-        // In rustls 0.23, ServerName needs to be 'static - use Box::leak to create 'static reference
-        let hostname_owned = Box::new(hostname.to_string());
-        let hostname_static: &'static str = Box::leak(hostname_owned);
-        let server_name = ServerName::try_from(hostname_static)
+        let server_name = ServerName::try_from(hostname.to_string())
             .map_err(|e| anyhow::anyhow!("Invalid server name: {}", e))?;
 
         let tls_stream = connector
@@ -1644,10 +1639,7 @@ impl HandshakeEngine {
             .await
             .map_err(|e| anyhow::anyhow!("TLS 1.2 connection failed: {}", e))?;
 
-        // In rustls 0.23, ServerName needs to be 'static - use Box::leak to create 'static reference
-        let hostname_owned = Box::new(hostname.to_string());
-        let hostname_static: &'static str = Box::leak(hostname_owned);
-        let server_name = ServerName::try_from(hostname_static)
+        let server_name = ServerName::try_from(hostname.to_string())
             .map_err(|e| anyhow::anyhow!("Invalid server name: {}", e))?;
 
         let tls_stream = connector
