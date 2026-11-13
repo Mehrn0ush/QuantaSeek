@@ -14,11 +14,13 @@
 //! - [`cert`]: X.509 algorithm naming
 //! - [`http_redirect`]: opt-in redirect following
 //! - [`probe`]: opt-in per-group probing with a hand-built ClientHello
+//! - [`findings`]: rules, policy packs and the derived score
 //!
 //! See README.md for what the scanner can and cannot observe.
 
 pub mod cert;
 pub mod constants;
+pub mod findings;
 pub mod handshake;
 pub mod http_redirect;
 pub mod probe;

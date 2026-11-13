@@ -30,6 +30,43 @@
       ],
       "type": "object"
     },
+    "Assessment": {
+      "additionalProperties": false,
+      "properties": {
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/Finding"
+          },
+          "type": "array"
+        },
+        "not_evaluated": {
+          "items": {
+            "$ref": "#/$defs/NotEvaluated"
+          },
+          "type": "array"
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The policy pack applied, or null for QuantaSeek's default severities."
+        },
+        "score": {
+          "$ref": "#/$defs/Score"
+        }
+      },
+      "required": [
+        "findings",
+        "not_evaluated",
+        "score"
+      ],
+      "type": "object"
+    },
     "CertificateReport": {
       "additionalProperties": false,
       "properties": {
@@ -222,6 +259,24 @@
     },
     "Evidence": {
       "additionalProperties": false,
+      "description": "An observed report field a finding was derived from.",
+      "properties": {
+        "field": {
+          "description": "Path in this report, e.g. \"tls.key_exchange.name\".",
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "value"
+      ],
+      "type": "object"
+    },
+    "Evidence2": {
+      "additionalProperties": false,
       "properties": {
         "server_hellos_hex": {
           "description": "Hex of each plaintext ServerHello / HelloRetryRequest message received.",
@@ -233,6 +288,70 @@
       },
       "required": [
         "server_hellos_hex"
+      ],
+      "type": "object"
+    },
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Stable rule id, e.g. \"QS-KEX-001\".",
+          "type": "string"
+        },
+        "introduced_in": {
+          "description": "QuantaSeek version that introduced the rule.",
+          "type": "string"
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyClause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when a policy pack was applied."
+        },
+        "provenance": {
+          "description": "Always \"derived\": a rule applied to the observed `evidence`.",
+          "type": "string"
+        },
+        "references": {
+          "items": {
+            "$ref": "#/$defs/Reference"
+          },
+          "type": "array"
+        },
+        "remediation": {
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "severity",
+        "provenance",
+        "evidence",
+        "description",
+        "remediation",
+        "references",
+        "introduced_in"
       ],
       "type": "object"
     },
@@ -424,6 +543,22 @@
       ],
       "type": "object"
     },
+    "NotEvaluated": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "reason"
+      ],
+      "type": "object"
+    },
     "Outcome": {
       "additionalProperties": false,
       "properties": {
@@ -445,6 +580,61 @@
       },
       "required": [
         "status"
+      ],
+      "type": "object"
+    },
+    "PolicyClause": {
+      "additionalProperties": false,
+      "description": "The policy clause a finding falls under.",
+      "properties": {
+        "clause": {
+          "type": "string"
+        },
+        "deadline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "policy": {
+          "type": "string"
+        },
+        "quote": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "policy",
+        "clause",
+        "quote",
+        "url"
+      ],
+      "type": "object"
+    },
+    "PolicyInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "retrieved": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "url",
+        "retrieved"
       ],
       "type": "object"
     },
@@ -638,6 +828,31 @@
       ],
       "type": "object"
     },
+    "Reference": {
+      "additionalProperties": false,
+      "description": "A primary-source reference with a verbatim quote.",
+      "properties": {
+        "quote": {
+          "type": "string"
+        },
+        "section": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "url",
+        "section",
+        "quote"
+      ],
+      "type": "object"
+    },
     "ScanError": {
       "additionalProperties": false,
       "description": "Structured error information for a scan (stable JSON schema).",
@@ -686,6 +901,43 @@
         "category"
       ],
       "type": "object"
+    },
+    "Score": {
+      "additionalProperties": false,
+      "description": "Score derived from findings. Not an independent measurement.",
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "provenance": {
+          "description": "Always \"derived\".",
+          "type": "string"
+        },
+        "value": {
+          "description": "0..=100.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "value",
+        "provenance",
+        "method"
+      ],
+      "type": "object"
+    },
+    "Severity": {
+      "description": "Finding severity, lowest to highest.",
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "type": "string"
     },
     "SignatureSchemeReport": {
       "additionalProperties": false,
@@ -879,6 +1131,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "assessment": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Assessment"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Findings derived from this report, the policy applied, and a score\nderived from the findings."
+    },
     "certificate_chain": {
       "description": "Certificates as sent by the server, leaf first. Reported whenever the\nserver presented them, including when validation failed; see\n`certificate_validation`.",
       "items": {
@@ -896,7 +1159,7 @@
       "type": "integer"
     },
     "evidence": {
-      "$ref": "#/$defs/Evidence"
+      "$ref": "#/$defs/Evidence2"
     },
     "http_redirect": {
       "anyOf": [

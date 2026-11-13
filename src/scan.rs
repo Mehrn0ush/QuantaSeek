@@ -176,6 +176,8 @@ pub struct ScanOptions {
     pub handshake: HandshakeConfig,
     /// Run per-group probes after the handshake (opt-in).
     pub probe: Option<crate::probe::ProbeOptions>,
+    /// Policy pack for the assessment; None uses default severities.
+    pub policy: Option<&'static crate::findings::PolicyPack>,
 }
 
 impl Default for ScanOptions {
@@ -188,6 +190,7 @@ impl Default for ScanOptions {
             connect_timeout: Duration::from_secs(5),
             handshake: HandshakeConfig::default(),
             probe: None,
+            policy: None,
         }
     }
 }
@@ -262,6 +265,16 @@ pub async fn try_connect(
 /// Scan one target with one profile: one TCP connection and one handshake per
 /// port tried, stopping at the first port that accepts TCP.
 pub async fn scan_target(
+    opts: &ScanOptions,
+    target: &str,
+    profile: &HandshakeProfile,
+) -> ScanReport {
+    let mut report = scan_target_unassessed(opts, target, profile).await;
+    report.assessment = Some(crate::findings::assess(&report, opts.policy));
+    report
+}
+
+async fn scan_target_unassessed(
     opts: &ScanOptions,
     target: &str,
     profile: &HandshakeProfile,

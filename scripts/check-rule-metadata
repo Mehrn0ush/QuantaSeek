@@ -1,0 +1,6 @@
+#!/bin/sh
+# Fails if any rule (rules/rules.toml) or policy entry (policies/*.toml)
+# lacks a primary-source reference with a verbatim quote.
+set -eu
+cd "$(dirname "$0")/.."
+exec cargo test --quiet --test rule_metadata

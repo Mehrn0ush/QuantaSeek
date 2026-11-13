@@ -63,6 +63,9 @@ pub struct ScanReport {
     pub http_redirect: Option<HttpRedirectInfo>,
     /// Per-group probing results; present only with `--probe`.
     pub probe: Option<ProbeReport>,
+    /// Findings derived from this report, the policy applied, and a score
+    /// derived from the findings.
+    pub assessment: Option<crate::findings::Assessment>,
     /// Aspects this version does not observe.
     pub not_implemented: Vec<String>,
     /// Capabilities that exist but were not requested for this scan
@@ -712,6 +715,7 @@ impl ScanReport {
             pqc,
             http_redirect,
             probe,
+            assessment: None,
             not_implemented: NOT_IMPLEMENTED.iter().map(|s| s.to_string()).collect(),
             not_requested,
             evidence: Evidence {
@@ -818,6 +822,27 @@ impl ScanReport {
                     "          ClientHello tolerance: baseline {}, padded {}, split records {}, split segments {}",
                     t.baseline, t.padded, t.split_records, t.split_segments
                 );
+            }
+        }
+        if let Some(a) = &self.assessment {
+            let policy = a
+                .policy
+                .as_ref()
+                .map(|p| p.id.as_str())
+                .unwrap_or("default severities");
+            let _ = writeln!(
+                out,
+                "Findings ({}): score {} (derived)",
+                policy, a.score.value
+            );
+            for f in &a.findings {
+                let _ = writeln!(out, "  [{:?}] {} {}", f.severity, f.id, f.title);
+                for e in &f.evidence {
+                    let _ = writeln!(out, "      {} = {}", e.field, e.value);
+                }
+            }
+            for n in &a.not_evaluated {
+                let _ = writeln!(out, "  not evaluated: {} ({})", n.id, n.reason);
             }
         }
         let _ = writeln!(out, "Not observed: {}", self.not_implemented.join(", "));

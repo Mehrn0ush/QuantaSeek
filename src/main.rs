@@ -53,6 +53,16 @@ struct Cli {
     #[arg(long, default_value_t = 100, value_name = "MS", value_parser = clap::value_parser!(u64).range(100..))]
     probe_spacing: u64,
 
+    /// Apply a policy pack to the findings (default: QuantaSeek's default
+    /// severities for every rule)
+    #[arg(long, value_name = "ID", value_parser = parse_policy)]
+    policy: Option<&'static quanta_seek::findings::PolicyPack>,
+
+    /// Exit with status 1 if any finding has at least this severity
+    /// (info, low, medium, high, critical) or never
+    #[arg(long, default_value = "high", value_name = "SEVERITY")]
+    fail_on: String,
+
     /// TCP connect timeout in seconds
     #[arg(long, default_value_t = 5, value_name = "SECS")]
     connect_timeout: u64,
@@ -68,6 +78,16 @@ struct Cli {
     /// Increase log detail on stderr (-v debug, -vv trace)
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+}
+
+fn parse_policy(id: &str) -> Result<&'static quanta_seek::findings::PolicyPack, String> {
+    quanta_seek::findings::policy(id).ok_or_else(|| {
+        format!(
+            "unknown policy '{}'; available: {}",
+            id,
+            quanta_seek::findings::policy_ids().join(", ")
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -93,14 +113,18 @@ fn init_logging(quiet: bool, verbose: u8) {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<std::process::ExitCode> {
     let cli = Cli::parse();
+    let fail_on: Option<quanta_seek::findings::Severity> = match cli.fail_on.as_str() {
+        "never" => None,
+        other => Some(other.parse().map_err(|e: String| anyhow::anyhow!(e))?),
+    };
     if cli.print_schema {
         println!(
             "{}",
             serde_json::to_string_pretty(&quanta_seek::report::json_schema())?
         );
-        return Ok(());
+        return Ok(std::process::ExitCode::SUCCESS);
     }
     init_logging(cli.quiet, cli.verbose);
 
@@ -115,6 +139,7 @@ async fn main() -> Result<()> {
     let opts = ScanOptions {
         sni: cli.sni.clone(),
         follow_redirects: cli.follow_redirects,
+        policy: cli.policy,
         probe: cli.probe.then(|| quanta_seek::probe::ProbeOptions {
             max_probes: cli.probe_budget,
             spacing: Duration::from_millis(cli.probe_spacing),
@@ -141,9 +166,21 @@ async fn main() -> Result<()> {
     );
 
     // One result per target, written as soon as it is ready.
+    // Exit status: 2 if any target produced no observation (network or
+    // scanner error); else 1 if a finding reaches --fail-on; else 0.
+    let mut scan_error = false;
+    let mut over_threshold = false;
     let stdout = std::io::stdout();
     for target in &targets {
         let report = scan_target(&opts, target, &profile).await;
+        if let Some(e) = &report.outcome.error {
+            if e.category != quanta_seek::ErrorCategory::ServerResult {
+                scan_error = true;
+            }
+        }
+        if let (Some(threshold), Some(a)) = (fail_on, &report.assessment) {
+            over_threshold |= a.findings.iter().any(|f| f.severity >= threshold);
+        }
         let mut out = stdout.lock();
         match format {
             OutputFormat::Json => {
@@ -157,5 +194,11 @@ async fn main() -> Result<()> {
         out.flush()?;
     }
 
-    Ok(())
+    Ok(std::process::ExitCode::from(if scan_error {
+        2
+    } else if over_threshold {
+        1
+    } else {
+        0
+    }))
 }
