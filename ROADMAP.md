@@ -402,10 +402,10 @@ Acceptance [ran on macOS arm64, Docker 28.0.4, unless noted]:
 
 | # | Check | Result |
 |---|---|---|
-| 1 | `docker compose -f testbed/compose.yml up -d --build --wait && cargo test --features testbed` | `up --build --wait`: 15/15 healthy; `cargo test --features testbed --test testbed`: 13 passed, 4 ignored. A final clean-start rerun was cut short when Docker Desktop stopped responding (see check 4). **Not run on Linux CI** |
+| 1 | `docker compose -f testbed/compose.yml up -d --build --wait && cargo test --features testbed` | **Passed**, run by the project owner on 2026-11-13 after the Docker restart (testbed: 13 passed, 4 ignored). Not run on Linux CI |
 | 2 | each testbed server has a test asserting the exact group, certificate algorithm and provenance | 15 servers, all covered by `tests/testbed.rs` |
 | 3 | `cargo +nightly fuzz run server_hello -- -max_total_time=300` | 10.0M executions in 301 s, no crash; certificate_report 6.5M; target_parse 13.2M after the fix |
-| 4 | `cargo test` without the feature uses no network | **Not verified by running.** The `--network none` Linux container run aborted when the Docker daemon crashed mid-build (`unexpected EOF`). By reading: every default test uses only 127.0.0.1/::1 in-process servers, or inputs that fail before DNS. The GitHub `unshare` job has not run |
+| 4 | `cargo test` without the feature uses no network | **Passed**, run by the project owner on 2026-11-13 in a `--network none` Linux container. The GitHub `unshare` job has not run |
 
 ### M3: Detection engine (about 4–6 weeks)
 
@@ -709,9 +709,13 @@ plan) rather than relicensing the scanner.
    `--follow-redirects`, reported in a separate field.
 7. **D7 Profiles.** *Decided:* real profiles limited to groups rustls
    implements. Done in M1.
+   - *M3 probing (decided 2026-11-13):* per-group probing is opt-in
+     (`--probe`), with a capped probe budget and at least 100 ms between
+     probes by default. The default scan stays one handshake.
 8. **D8 Policy-pack priority.** Which jurisdictions first? Suggested: NIST IR
    8547 (open) and CNSA 2.0, then BSI and ANSSI.
-9. **D9 Live-scan policy for research and marketing.** Which public hosts may be
+9. **D9 Live-scan policy for research and marketing.** *Interim for M3:*
+   local testbed only, no public hosts. Which public hosts may be
    scanned, at what rate, and whether results are ever published.
 10. **D10 Platform support.** Is Windows a release target? It affects CI and
     the aws-lc-sys toolchain.
