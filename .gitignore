@@ -1,10 +1,22 @@
-# Build
-/target
+# Build output
+/target/
 
+# Local scan output and scratch material (never commit scan results)
+/.archive/
+/scans/
+*.jsonl
+/summary-*.txt
+/pqc-summary-*.txt
+/success-summary-*.json
 
-# Local / debug
-test_debug
-debug_test.rs
-*.rs.bk
+# Editor / OS
 .DS_Store
-*.zsh
+.idea/
+.vscode/
+*.swp
+*.rs.bk
+
+# Fuzzing artifacts
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
