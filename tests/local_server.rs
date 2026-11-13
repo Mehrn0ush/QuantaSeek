@@ -115,3 +115,37 @@ fn target_parsing() {
     assert!(Target::parse(":443").is_err());
     assert!(Target::parse("[::1").is_err());
 }
+
+#[tokio::test]
+async fn sni_override_is_sent_and_validated() {
+    init();
+    let pki = TestPki::new("sni");
+    let server = spawn(ServerSpec {
+        identity: pki.leaf("qs.test", &["qs.test"]),
+        groups: vec![X25519MLKEM768, X25519],
+        http_response: None,
+    })
+    .await;
+    let target = format!("127.0.0.1:{}", server.port());
+    let profile = quanta_seek::types::ClientProfile::Fallback;
+
+    let opts = quanta_seek::scan::ScanOptions {
+        sni: Some("qs.test".into()),
+        ..scan_options(&pki)
+    };
+    let result = quanta_seek::scan::scan_target(&opts, &target, &profile, false)
+        .await
+        .unwrap();
+    assert!(result.handshake_complete, "error: {:?}", result.error);
+    assert_eq!(
+        server.accepted_at_least(1).await[0].sni.as_deref(),
+        Some("qs.test")
+    );
+
+    // Without the override the name is the IP literal, which the certificate
+    // does not cover, so validation fails and no handshake completes.
+    let result = quanta_seek::scan::scan_target(&scan_options(&pki), &target, &profile, false)
+        .await
+        .unwrap();
+    assert!(!result.handshake_complete);
+}

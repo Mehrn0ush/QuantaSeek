@@ -31,6 +31,11 @@ struct Cli {
     #[arg(long)]
     tls12: bool,
 
+    /// Server name to send in SNI and validate the certificate against
+    /// (default: the target host)
+    #[arg(long, value_name = "NAME")]
+    sni: Option<String>,
+
     /// TCP connect timeout in seconds
     #[arg(long, default_value_t = 5, value_name = "SECS")]
     connect_timeout: u64,
@@ -84,6 +89,7 @@ async fn main() -> Result<()> {
         ..HandshakeConfig::default()
     };
     let opts = ScanOptions {
+        sni: cli.sni.clone(),
         connect_timeout: Duration::from_secs(cli.connect_timeout),
         handshake,
         ..ScanOptions::default()

@@ -85,6 +85,8 @@ impl Target {
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
     pub ports: Vec<u16>,
+    /// Server name for SNI and certificate validation. `None` uses the target host.
+    pub sni: Option<String>,
     pub connect_timeout: Duration,
     pub handshake: HandshakeConfig,
 }
@@ -93,6 +95,7 @@ impl Default for ScanOptions {
     fn default() -> Self {
         Self {
             ports: DEFAULT_PORTS.to_vec(),
+            sni: None,
             connect_timeout: Duration::from_secs(5),
             handshake: HandshakeConfig::default(),
         }
@@ -573,6 +576,7 @@ pub async fn perform_scan_with_stream(
     tls12_enabled: bool,
 ) -> Result<ScanResult, Box<dyn std::error::Error>> {
     let scan_start = std::time::Instant::now();
+    let server_name = opts.sni.as_deref().unwrap_or(host);
 
     // Define fallback chain for each profile
     let fallback_chain = match profile {
@@ -614,7 +618,7 @@ pub async fn perform_scan_with_stream(
             // FIXED: Use perform_handshake instead of perform_tcp_tls_handshake to capture raw_server_hello
             // This ensures raw_server_hello is populated even for Classic profile
             match try_connect(opts, host, port).await {
-                Ok(stream) => handshake.perform_handshake(stream, host).await,
+                Ok(stream) => handshake.perform_handshake(stream, server_name).await,
                 Err(e) => {
                     last_error = Some(e.to_string());
                     if attempt_idx < fallback_chain.len() - 1 {
@@ -643,7 +647,7 @@ pub async fn perform_scan_with_stream(
             // Try to perform handshake with this profile
             // Always create a new connection for each attempt to avoid ownership issues
             match try_connect(opts, host, port).await {
-                Ok(new_stream) => handshake.perform_handshake(new_stream, host).await,
+                Ok(new_stream) => handshake.perform_handshake(new_stream, server_name).await,
                 Err(e) => {
                     last_error = Some(e.to_string());
                     if attempt_idx < fallback_chain.len() - 1 {
