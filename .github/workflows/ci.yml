@@ -83,3 +83,36 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans licenses sources
+
+  # Default tests must not need the network: run them inside an empty
+  # network namespace after everything is built and fetched.
+  offline-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test --all-targets --locked --no-run
+      - name: cargo test with no network
+        run: sudo -E env "PATH=$PATH" "HOME=$HOME" unshare --net -- cargo test --all-targets --locked --offline
+
+  # Docker testbed: ground truth via openssl s_client, then QuantaSeek against it.
+  testbed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: docker compose -f testbed/compose.yml up -d --build --wait
+      - run: sh testbed/confirm.sh
+      - run: cargo test --features testbed --test testbed --locked
+        env:
+          QUANTASEEK_TESTBED_REQUIRED: "1"
+      - if: failure()
+        run: docker compose -f testbed/compose.yml logs
+      - if: always()
+        run: docker compose -f testbed/compose.yml down
