@@ -21,28 +21,25 @@ impl SecurityScorer {
 
     /// Calculate comprehensive security score for a scan result
     pub fn calculate_security_score(&self, result: &ScanResult) -> SecurityScore {
-        let mut details = SecurityScoreDetails::default();
-
-        // Calculate TLS protocol score
-        details.tls_version = self.score_tls_version(&result.tls_version);
-        details.cipher_suite = self.score_cipher_suite(&result.cipher_suite);
-        details.key_exchange = self.score_key_exchange(&result.key_exchange);
-
-        // Calculate certificate score
-        if let Some(cert) = &result.certificate {
-            details.certificate_validation = self.score_certificate_validation(result);
-            details.certificate_key_strength = self.score_certificate_key_strength(cert);
-        } else if result.tls_version == "QUIC" {
-            // For QUIC connections, use reasonable default certificate scores
-            // since certificates may not be directly accessible
-            details.certificate_validation = 80; // Assume valid for QUIC
-            details.certificate_key_strength = 80; // Assume reasonable strength
-        }
-
-        // Calculate PQC score
-        details.pqc_algorithm = self.calculate_pqc_algorithm_score(&result.analysis);
-        details.pqc_implementation = self.score_pqc_implementation(&result.analysis);
-        details.hybrid_security = self.score_hybrid_security(&result.analysis);
+        // No certificate means no certificate data: those sub-scores stay 0
+        // and the overall formula excludes the certificate component.
+        let (certificate_validation, certificate_key_strength) = match &result.certificate {
+            Some(cert) => (
+                self.score_certificate_validation(result),
+                self.score_certificate_key_strength(cert),
+            ),
+            None => (0, 0),
+        };
+        let details = SecurityScoreDetails {
+            tls_version: self.score_tls_version(&result.tls_version),
+            cipher_suite: self.score_cipher_suite(&result.cipher_suite),
+            key_exchange: self.score_key_exchange(&result.key_exchange),
+            certificate_validation,
+            certificate_key_strength,
+            pqc_algorithm: self.calculate_pqc_algorithm_score(&result.analysis),
+            pqc_implementation: self.score_pqc_implementation(&result.analysis),
+            hybrid_security: self.score_hybrid_security(&result.analysis),
+        };
 
         let pqc_score = if result.pqc_detected {
             // PQC = (Algorithm + Implementation + Hybrid) / 3
@@ -116,8 +113,6 @@ impl SecurityScorer {
             } else if certificate_available {
                 format!("Overall = 0.50×TLS({}) + 0.50×Certificate({}) = 0.50×{} + 0.50×{} = {}", 
                     tls_score, certificate_score, tls_score, certificate_score, overall)
-            } else if result.tls_version == "QUIC" {
-                format!("Overall = TLS({}) = {} (Certificate: N/A)", tls_score, overall)
             } else {
                 format!("Overall = TLS({}) = {} (Certificate: N/A)", tls_score, overall)
             },
@@ -861,10 +856,12 @@ mod tests {
     #[test]
     fn test_generate_security_warnings() {
         let scorer = SecurityScorer::new();
-        let mut score = SecurityScore::default();
-        score.tls = 75;
-        score.certificate = 70;
-        score.pqc = 75;
+        let score = SecurityScore {
+            tls: 75,
+            certificate: 70,
+            pqc: 75,
+            ..SecurityScore::default()
+        };
         let warnings = scorer.generate_security_warnings(&score);
         assert!(warnings.iter().any(|w| w.category == "TLS Security"));
         assert!(warnings

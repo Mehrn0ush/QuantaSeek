@@ -403,7 +403,7 @@ impl OutputFormatter {
         ));
 
         // Analysis
-        output.push_str(&"\nAnalysis:\n".to_string());
+        output.push_str("\nAnalysis:\n");
         output.push_str(&format!(
             "  Security Level: {}\n",
             result.analysis.security_level
@@ -418,7 +418,7 @@ impl OutputFormatter {
         ));
 
         // Security Scoring
-        output.push_str(&"\nSecurity Scoring:\n".to_string());
+        output.push_str("\nSecurity Scoring:\n");
         output.push_str(&format!(
             "  Overall Score: {}/100\n",
             result.security_score.overall
@@ -431,7 +431,7 @@ impl OutputFormatter {
         output.push_str(&format!("  PQC Score: {}/100\n", result.security_score.pqc));
 
         // Detailed Security Breakdown
-        output.push_str(&"\nDetailed Security Breakdown:\n".to_string());
+        output.push_str("\nDetailed Security Breakdown:\n");
         output.push_str(&format!(
             "  TLS Version: {}/100\n",
             result.security_score.details.tls_version
@@ -472,7 +472,7 @@ impl OutputFormatter {
 
         // Security Warnings
         if !result.security_warnings.is_empty() {
-            output.push_str(&"\nSecurity Warnings:\n".to_string());
+            output.push_str("\nSecurity Warnings:\n");
             for warning in &result.security_warnings {
                 output.push_str(&format!(
                     "  [{}] {}: {}\n",
@@ -488,7 +488,7 @@ impl OutputFormatter {
 
         // Performance Warnings
         if !result.performance_warnings.is_empty() {
-            output.push_str(&"\nPerformance Warnings:\n".to_string());
+            output.push_str("\nPerformance Warnings:\n");
             for warning in &result.performance_warnings {
                 output.push_str(&format!(
                     "  [{}] {}: {}\n",
@@ -877,7 +877,7 @@ pub fn output_results(result: &ScanResult, format: OutputFormat) {
 pub fn generate_markdown_report(result: &ScanResult) -> String {
     let mut report = String::new();
 
-    report.push_str(&"# PQC TLS Scan Report\n\n".to_string());
+    report.push_str("# PQC TLS Scan Report\n\n");
     report.push_str(&format!("**Target:** {}\n", result.target));
     report.push_str(&format!(
         "**Client Profile:** {}\n",

@@ -4,20 +4,15 @@ use anyhow::{anyhow, Result};
 use std::time::Duration;
 
 /// HTTP method to use for redirect detection
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HttpMethod {
     /// Use HEAD method (default, more efficient)
     Head,
     /// Use GET method (more compatible, some servers don't support HEAD)
     Get,
     /// Try HEAD first, fallback to GET if HEAD fails or returns 405
+    #[default]
     Auto,
-}
-
-impl Default for HttpMethod {
-    fn default() -> Self {
-        HttpMethod::Auto
-    }
 }
 
 /// Detect HTTP redirects and get certificate from final destination
@@ -438,7 +433,7 @@ mod tests {
                 // If no redirect, detected should be false
                 // But we don't assert this because servers may change behavior
                 assert!(
-                    info.redirect_chain.len() >= 1,
+                    !info.redirect_chain.is_empty(),
                     "Should have at least initial URL in chain"
                 );
             }

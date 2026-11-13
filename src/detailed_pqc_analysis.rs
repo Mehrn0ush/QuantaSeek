@@ -1,7 +1,7 @@
 use crate::types::{
     AlgorithmType, CombinedSecurity, ExtensionInfo, ExtensionStatus, ExtensionUsage,
     FallbackAnalysis, HybridComponent, HybridDetails, HybridEfficiency, KemCandidate,
-    KemNegotiation, KemStatus, PqcAnalysis,
+    KemNegotiation, KemStatus,
 };
 use std::collections::HashMap;
 
@@ -512,39 +512,6 @@ impl DetailedPqcAnalyzer {
             cpu_overhead_percent,
             memory_overhead_bytes,
         }
-    }
-
-    /// Update PQC analysis with detailed information
-    pub fn update_pqc_analysis(
-        &self,
-        analysis: &mut PqcAnalysis,
-        client_offered_kems: &[String],
-        server_selected_kem: Option<&str>,
-        key_exchange: &[String],
-        client_extensions: &[(u16, Option<u32>)],
-        server_extensions: &[(u16, Option<u32>)],
-        handshake_duration_ms: Option<u64>,
-    ) {
-        // Analyze KEM negotiation
-        analysis.kem_negotiation = Some(self.analyze_kem_negotiation(
-            client_offered_kems,
-            server_selected_kem,
-            key_exchange,
-        ));
-
-        // Analyze extension usage
-        analysis.extension_usage = Some(self.analyze_extension_usage(
-            client_extensions,
-            server_extensions,
-            &analysis.pqc_extensions,
-        ));
-
-        // Analyze hybrid details
-        analysis.hybrid_details = Some(self.analyze_hybrid_details(
-            key_exchange,
-            handshake_duration_ms,
-            analysis.classical_fallback_available,
-        ));
     }
 }
 

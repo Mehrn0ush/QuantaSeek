@@ -161,7 +161,7 @@ async fn scan_target(
 ) -> Result<ScanResult> {
     let mut result = ScanResult::new(target.to_string());
     // FIXED: Set profile immediately so failed scans don't show "Unknown"
-    result.set_profile(&profile.consistent_display_name());
+    result.set_profile(profile.consistent_display_name());
 
     // Try multiple DNS resolution strategies
     let mut connection_success = false;
@@ -198,8 +198,6 @@ async fn scan_target(
                 scan_result.update_from_handshake(quic_handshake_result);
                 // raw_server_hello is already copied in update_from_handshake
 
-                let mut certificate_replaced = false;
-
                 // Detect HTTP redirects after handshake
                 if scan_result.handshake_complete {
                     match detect_http_redirects(target, 10).await {
@@ -227,7 +225,6 @@ async fn scan_target(
                                         .unwrap_or(true);
                                     if should_replace {
                                         scan_result.certificate = Some(final_cert.clone());
-                                        certificate_replaced = true;
                                         // Re-analyze with new certificate
                                         let detector = PqcDetector::new();
                                         let handshake_result = HandshakeResult {
@@ -629,7 +626,6 @@ async fn perform_scan_with_stream(
     let mut attempted_profiles = Vec::new();
     let mut last_error = None;
     let mut handshake_result = None;
-    let mut final_profile = profile.to_handshake_profile();
 
     // FIXED: Try each profile in the fallback chain with proper TLS 1.2 handling
     for (attempt_idx, fallback_profile) in fallback_chain.iter().enumerate() {
@@ -695,7 +691,6 @@ async fn perform_scan_with_stream(
             Ok(result) => {
                 // Handshake succeeded with this profile
                 handshake_result = Some(result);
-                final_profile = *fallback_profile;
                 break; // Success - no need to try next profile
             }
             Err(e) => {
@@ -838,13 +833,10 @@ async fn perform_scan_with_stream(
                     // Use final destination certificate if different
                     if let Some(ref final_cert) = redirect_info.final_destination_certificate {
                         let should_replace =
-                            scan_result
-                                .certificate
-                                .as_ref()
-                                .map_or(true, |initial_cert| {
-                                    initial_cert.subject != final_cert.subject
-                                        || initial_cert.issuer != final_cert.issuer
-                                });
+                            scan_result.certificate.as_ref().is_none_or(|initial_cert| {
+                                initial_cert.subject != final_cert.subject
+                                    || initial_cert.issuer != final_cert.issuer
+                            });
                         if should_replace {
                             scan_result.certificate = Some(final_cert.clone());
                             // Re-analyze with new certificate
@@ -975,7 +967,7 @@ async fn scan_multiple_targets(
                 // Create a failed result for consistency
                 let mut failed_result = ScanResult::new(target.clone());
                 // FIXED: Set profile for failed scans so they don't show "Unknown"
-                failed_result.set_profile(&profile.consistent_display_name());
+                failed_result.set_profile(profile.consistent_display_name());
                 failed_result.handshake_complete = false;
                 failed_result.security_warnings = vec![SecurityWarning {
                     message: format!("Scan failed: {}", e),

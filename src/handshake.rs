@@ -5,7 +5,6 @@ use tokio::net::TcpStream;
 
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore};
-use std::collections::HashSet;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 
@@ -96,6 +95,35 @@ pub fn webpki_root_store() -> RootCertStore {
     }
 }
 
+/// Values collected by [`HandshakeEngine::perform_handshake_internal`]:
+/// (tls_version, cipher_suite, success, peer_certs, alpn, raw_server_hello,
+/// raw_certificate, key_exchange, nine extension flags, alpn string,
+/// raw_tls_records). Candidate for a struct in the detection-engine rework.
+type RawHandshakeData = (
+    String,
+    String,
+    bool,
+    Option<Vec<CertificateDer<'static>>>,
+    Option<Vec<u8>>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<String>,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    String,
+    Vec<u8>,
+);
+
+/// Shared slot the capturing verifier writes the TLS 1.3 CertificateVerify scheme into.
+type CapturedScheme = Arc<Mutex<Option<SignatureScheme>>>;
+
 pub struct HandshakeEngine {
     profile: HandshakeProfile,
     config: HandshakeConfig,
@@ -116,24 +144,30 @@ impl HandshakeEngine {
 
     /// Create a new handshake engine with optimized settings for performance
     pub fn new_optimized(profile: HandshakeProfile) -> Self {
-        let mut config = HandshakeConfig::default();
-        config.timeout_ms = 2000;
-        config.enable_optimizations = true;
+        let config = HandshakeConfig {
+            timeout_ms: 2000,
+            enable_optimizations: true,
+            ..HandshakeConfig::default()
+        };
         Self { profile, config }
     }
 
     /// Create a new handshake engine with conservative settings for reliability
     pub fn new_conservative(profile: HandshakeProfile) -> Self {
-        let mut config = HandshakeConfig::default();
-        config.timeout_ms = 10000;
-        config.enable_optimizations = false;
+        let config = HandshakeConfig {
+            timeout_ms: 10000,
+            enable_optimizations: false,
+            ..HandshakeConfig::default()
+        };
         Self { profile, config }
     }
 
     /// Create with custom timeout
     pub fn with_timeout(profile: HandshakeProfile, timeout_ms: u64) -> Self {
-        let mut config = HandshakeConfig::default();
-        config.timeout_ms = timeout_ms;
+        let config = HandshakeConfig {
+            timeout_ms,
+            ..HandshakeConfig::default()
+        };
         Self { profile, config }
     }
 
@@ -186,28 +220,17 @@ impl HandshakeEngine {
             let config = Arc::clone(&config);
             let std_stream = stream.into_std()?;
             let profile = self.profile;
-            move || -> Result<(
-                String, String, bool,
-                Option<Vec<CertificateDer<'static>>>,
-                Option<Vec<u8>>,
-                Vec<u8>,
-                Vec<u8>,
-                Vec<String>,
-                bool,
-                bool,
-                bool,
-                bool,
-                bool,
-                bool,
-                bool,
-                bool,
-                bool,
-                String,
-                Vec<u8>  // raw_tls_records
-            )> {
-                Self::perform_handshake_internal(config, hostname_no_port, std_stream, profile, timeout_ms)
+            move || -> Result<RawHandshakeData> {
+                Self::perform_handshake_internal(
+                    config,
+                    hostname_no_port,
+                    std_stream,
+                    profile,
+                    timeout_ms,
+                )
             }
-        }).await??;
+        })
+        .await??;
 
         let handshake_duration = start_time.elapsed();
 
@@ -435,16 +458,13 @@ impl HandshakeEngine {
         let pqc_signature_used: Option<bool> = if let Some(sig_scheme) = cert_verify_signature {
             // CapturingVerifier or raw records: definitive scheme
             Some(is_pqc_signature_algorithm(sig_scheme))
-        } else if let Some(ref cert_info) = certificate_info {
-            // Certificate-based PQC: set Some when cert exists (map_or false when OID missing = classical)
-            Some(
+        } else {
+            certificate_info.as_ref().map(|cert_info| {
                 cert_info
                     .signature_algorithm_oid
                     .as_ref()
-                    .map_or(false, |oid| is_pqc_oid(oid)),
-            )
-        } else {
-            None // Unknown - no CertificateVerify signature or certificate available
+                    .is_some_and(|oid| is_pqc_oid(oid))
+            })
         };
 
         // Remove duplicates and sort for consistency
@@ -551,27 +571,7 @@ impl HandshakeEngine {
         mut stream: std::net::TcpStream,
         _profile: HandshakeProfile,
         timeout_ms: u64,
-    ) -> Result<(
-        String,
-        String,
-        bool,
-        Option<Vec<CertificateDer<'static>>>,
-        Option<Vec<u8>>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<String>,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        String,
-        Vec<u8>, // raw_tls_records
-    )> {
+    ) -> Result<RawHandshakeData> {
         // In rustls 0.23, ServerName is in pki_types
         use rustls::pki_types::ServerName;
         use std::time::Duration;
@@ -773,33 +773,16 @@ impl HandshakeEngine {
                                                  // FIXED: Extract raw_server_hello from TCP/TLS fallback for PQC detection
         let mut raw_server_hello = Vec::new();
         let mut raw_server_hello_populated = false; // Track if raw_server_hello was populated from TCP/TLS fallback
-                                                    // FIXED: Don't use hardcoded 150ms - measure actual duration
-        let mut handshake_duration = std::time::Duration::ZERO;
 
-        // Step 1: Try direct QUIC certificate extraction
-        // FIXED: Use actual port parameter, not hardcoded 443
-        let _quic_extraction_success = match self
+        // Step 1: direct QUIC certificate extraction. Not implemented: the
+        // stub below always returns None, so Step 2 provides all data.
+        if let Ok((Some(cert), _)) = self
             .perform_quic_with_cert_extraction(hostname_only, actual_port)
             .await
         {
-            Ok((cert_info, _duration)) => {
-                if let Some(cert) = cert_info {
-                    certificate_info = Some(cert);
-                    certificate_visible = true;
-                    handshake_duration = start_time.elapsed();
-                    true // Success
-                } else {
-                    // Direct extraction failed, try TCP/TLS fallback
-                    handshake_duration = start_time.elapsed();
-                    false
-                }
-            }
-            Err(_e) => {
-                // QUIC connection failed, will try TCP/TLS fallback
-                handshake_duration = start_time.elapsed();
-                false
-            }
-        };
+            certificate_info = Some(cert);
+            certificate_visible = true;
+        }
 
         // Step 2: Always run TCP/TLS fallback for QUIC-detected hosts (suggestion 8.1 from SCAN_REPORT_ANALYSIS)
         // Ensures we attempt to get raw_server_hello, certificate, and key_exchange so QUIC-path results
@@ -915,14 +898,11 @@ impl HandshakeEngine {
                             // FIXED: If we got raw_server_hello and key_exchange, we can exit even without certificate
                             // This is important for QUIC-only servers that may not support TCP/TLS
                             if raw_server_hello_populated && !key_exchange.is_empty() {
-                                handshake_duration = start_time.elapsed();
                                 // Don't break here - continue to try to get certificate if we don't have it
                                 // But if we already have certificate, we can break
                                 if certificate_info.is_some() {
                                     break; // Success, exit retry loop
                                 }
-                            } else {
-                                handshake_duration = start_time.elapsed();
                             }
                         }
                         Ok(Err(_e)) => {
@@ -960,10 +940,7 @@ impl HandshakeEngine {
         // FIXED: Measure final handshake duration - always use elapsed time
         // Even if certificate extraction failed, we still have a handshake duration
         // FIXED: Ensure minimum 1ms to avoid zero duration (which would serialize as null)
-        handshake_duration = start_time.elapsed();
-        if handshake_duration.as_millis() == 0 {
-            handshake_duration = std::time::Duration::from_millis(1); // Minimum 1ms to avoid null serialization
-        }
+        let handshake_duration = start_time.elapsed();
 
         // FIXED: handshake_complete should be true if we successfully connected
         // For QUIC, if we reached here (either direct extraction or TCP/TLS fallback), handshake was successful
@@ -1011,16 +988,12 @@ impl HandshakeEngine {
         // FIXED: PQC signature usage (suggestion 8.2). When certificate_visible/certificate_info exists,
         // always set Some(true/false) from cert OID so "Not Implemented" is reduced for QUIC-with-fallback.
         // When quinn exposes CertificateVerify (callback/hook), capture the scheme there and set pqc_signature_used.
-        let pqc_signature_used_flag: Option<bool> = if let Some(ref cert_info) = certificate_info {
-            Some(
-                cert_info
-                    .signature_algorithm_oid
-                    .as_ref()
-                    .map_or(false, |oid| is_pqc_oid(oid)),
-            )
-        } else {
-            None // Unknown - no certificate available
-        };
+        let pqc_signature_used_flag: Option<bool> = certificate_info.as_ref().map(|cert_info| {
+            cert_info
+                .signature_algorithm_oid
+                .as_ref()
+                .is_some_and(|oid| is_pqc_oid(oid))
+        });
 
         // FIXED: Extract cipher suite from raw_server_hello if available
         // If raw_server_hello is empty, set key_exchange to indicate unavailability instead of empty
@@ -1123,9 +1096,7 @@ impl HandshakeEngine {
 
     /// Create optimized TLS configuration with CertificateVerify signature scheme capture
     /// Returns both the config and a shared mutex to read the captured signature scheme
-    fn create_optimized_tls_config(
-        &self,
-    ) -> Result<(Arc<ClientConfig>, Arc<Mutex<Option<SignatureScheme>>>)> {
+    fn create_optimized_tls_config(&self) -> Result<(Arc<ClientConfig>, CapturedScheme)> {
         // In rustls 0.23, ensure crypto provider is set (required for prefer-post-quantum feature)
         use rustls::crypto::aws_lc_rs::default_provider;
         let _ = default_provider().install_default();
