@@ -2,6 +2,7 @@
 name = "quanta_seek"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 description = "TLS scanner that reports observed post-quantum key exchange and certificate algorithms"
 repository = "https://github.com/Mehrn0ush/QuantaSeek"
 readme = "README.md"
