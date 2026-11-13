@@ -36,3 +36,10 @@ path = "fuzz_targets/target_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "server_reply"
+path = "fuzz_targets/server_reply.rs"
+test = false
+doc = false
+bench = false
