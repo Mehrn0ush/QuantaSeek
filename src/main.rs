@@ -32,6 +32,11 @@ struct Cli {
     #[arg(long, value_name = "NAME")]
     sni: Option<String>,
 
+    /// After the handshake, follow HTTP redirects and report the chain and the
+    /// final destination's certificate separately (off by default)
+    #[arg(long)]
+    follow_redirects: bool,
+
     /// TCP connect timeout in seconds
     #[arg(long, default_value_t = 5, value_name = "SECS")]
     connect_timeout: u64,
@@ -86,6 +91,7 @@ async fn main() -> Result<()> {
     };
     let opts = ScanOptions {
         sni: cli.sni.clone(),
+        follow_redirects: cli.follow_redirects,
         connect_timeout: Duration::from_secs(cli.connect_timeout),
         handshake,
         ..ScanOptions::default()

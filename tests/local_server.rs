@@ -148,3 +148,76 @@ async fn sni_override_is_sent_and_validated() {
         .unwrap();
     assert!(!result.handshake_complete);
 }
+
+async fn redirect_pair(pki: &TestPki) -> (TestServer, TestServer) {
+    let destination = spawn(ServerSpec {
+        identity: pki.leaf("redirect-destination", &["127.0.0.1"]),
+        groups: vec![X25519MLKEM768, X25519],
+        http_response: Some(
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+        ),
+    })
+    .await;
+    let origin = spawn(ServerSpec {
+        identity: pki.leaf("redirect-origin", &["127.0.0.1"]),
+        groups: vec![X25519MLKEM768, X25519],
+        http_response: Some(format!(
+            "HTTP/1.1 301 Moved Permanently\r\nLocation: https://127.0.0.1:{}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            destination.port()
+        )),
+    })
+    .await;
+    (origin, destination)
+}
+
+#[tokio::test]
+async fn redirects_are_not_followed_by_default() {
+    init();
+    let pki = TestPki::new("redirect-off");
+    let (origin, destination) = redirect_pair(&pki).await;
+    let target = format!("127.0.0.1:{}", origin.port());
+    let result = quanta_seek::scan::scan_target(
+        &scan_options(&pki),
+        &target,
+        &quanta_seek::types::ClientProfile::Fallback,
+    )
+    .await
+    .unwrap();
+    assert!(result.handshake_complete, "error: {:?}", result.error);
+    assert!(result.http_redirect.is_none());
+    assert_eq!(result.certificate.unwrap().subject, "redirect-origin");
+    assert_eq!(destination.connections(), 0);
+}
+
+#[tokio::test]
+async fn followed_redirect_never_replaces_target_certificate() {
+    init();
+    let pki = TestPki::new("redirect-on");
+    let (origin, _destination) = redirect_pair(&pki).await;
+    let target = format!("127.0.0.1:{}", origin.port());
+    let opts = quanta_seek::scan::ScanOptions {
+        follow_redirects: true,
+        ..scan_options(&pki)
+    };
+    let result = quanta_seek::scan::scan_target(
+        &opts,
+        &target,
+        &quanta_seek::types::ClientProfile::Fallback,
+    )
+    .await
+    .unwrap();
+    assert!(result.handshake_complete, "error: {:?}", result.error);
+    // The target's own certificate is reported...
+    assert_eq!(
+        result.certificate.as_ref().unwrap().subject,
+        "redirect-origin"
+    );
+    // ...and the destination's certificate is reported separately.
+    let redirect = result.http_redirect.expect("redirect info");
+    assert!(redirect.detected);
+    assert_eq!(redirect.status_code, Some(301));
+    assert_eq!(
+        redirect.final_destination_certificate.unwrap().subject,
+        "redirect-destination"
+    );
+}

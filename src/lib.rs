@@ -31,7 +31,7 @@ pub mod types;
 // Re-export main types for easier access
 pub use detector::PqcDetector;
 pub use handshake::HandshakeEngine;
-pub use http_redirect::{detect_http_redirects, detect_http_redirects_with_method, HttpMethod};
+pub use http_redirect::{follow_redirects, RedirectOptions};
 pub use output::output_results;
 pub use output::OutputFormatter;
 pub use security_scoring::SecurityScorer;

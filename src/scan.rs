@@ -5,11 +5,11 @@
 
 use crate::{
     detector::PqcDetector,
-    http_redirect::detect_http_redirects,
+    http_redirect::{follow_redirects, RedirectOptions},
     security_scoring::SecurityScorer,
     types::{
-        ClientProfile, ErrorCode, FallbackInfo, HandshakeConfig, HandshakeResult,
-        PerformanceWarning, ScanError, ScanResult, SecurityScore, SecurityWarning, WarningLevel,
+        ClientProfile, ErrorCode, FallbackInfo, HandshakeConfig, PerformanceWarning, ScanError,
+        ScanResult, SecurityScore, SecurityWarning, WarningLevel,
     },
     HandshakeEngine, HandshakeProfile,
 };
@@ -87,6 +87,8 @@ pub struct ScanOptions {
     pub ports: Vec<u16>,
     /// Server name for SNI and certificate validation. `None` uses the target host.
     pub sni: Option<String>,
+    /// Follow HTTP redirects after the handshake and report them separately.
+    pub follow_redirects: bool,
     pub connect_timeout: Duration,
     pub handshake: HandshakeConfig,
 }
@@ -96,6 +98,7 @@ impl Default for ScanOptions {
         Self {
             ports: DEFAULT_PORTS.to_vec(),
             sni: None,
+            follow_redirects: false,
             connect_timeout: Duration::from_secs(5),
             handshake: HandshakeConfig::default(),
         }
@@ -422,72 +425,17 @@ pub async fn perform_scan_with_stream(
     scan_result.security_warnings = scorer.generate_security_warnings(&scan_result.security_score);
 
     // Detect HTTP redirects after handshake (for both TLS and QUIC)
-    if scan_result.handshake_complete {
-        match detect_http_redirects(target, 10).await {
-            Ok(redirect_info) => {
-                if redirect_info.detected {
-                    tracing::debug!(
-                        "HTTP redirect detected for {}: status={:?}, chain={:?}",
-                        target,
-                        redirect_info.status_code,
-                        redirect_info.redirect_chain
-                    );
-
-                    scan_result.http_redirect = Some(redirect_info.clone());
-                    // Use final destination certificate if different
-                    if let Some(ref final_cert) = redirect_info.final_destination_certificate {
-                        let should_replace =
-                            scan_result.certificate.as_ref().is_none_or(|initial_cert| {
-                                initial_cert.subject != final_cert.subject
-                                    || initial_cert.issuer != final_cert.issuer
-                            });
-                        if should_replace {
-                            scan_result.certificate = Some(final_cert.clone());
-                            // Re-analyze with new certificate
-                            let detector = PqcDetector::new();
-                            let handshake_result = HandshakeResult {
-                                target: target.to_string(),
-                                tls_version: scan_result.tls_version.clone(),
-                                cipher_suite: scan_result.cipher_suite.clone(),
-                                key_exchange: scan_result.key_exchange.clone(),
-                                pqc_extensions: scan_result.pqc_extensions.clone(),
-                                certificate_info: scan_result.certificate.clone(),
-                                raw_server_hello: scan_result.raw_server_hello.clone(),
-                                raw_certificate: Vec::new(),
-                                alert_info: None,
-                                certificate_visible: scan_result.certificate_visible,
-                                handshake_complete: scan_result.handshake_complete,
-                                pqc_signature_algorithms: Vec::new(),
-                                pqc_signature_used: None,
-                                tls_features: scan_result.tls_features.clone(),
-                                handshake_duration_ms: scan_result.handshake_duration_ms,
-                                client_profile_used: HandshakeProfile::Standard,
-                                extension_map: scan_result.extension_map.clone(),
-                                connection_type: scan_result.connection_type.clone(),
-                                cipher_suite_reason: scan_result.cipher_suite_reason.clone(),
-                            };
-                            let updated_analysis = detector.analyze_handshake(&handshake_result);
-                            scan_result.analysis = updated_analysis;
-                            // Recalculate security score with new certificate
-                            scan_result.security_score =
-                                scorer.calculate_security_score(&scan_result);
-                            scan_result.security_warnings =
-                                scorer.generate_security_warnings(&scan_result.security_score);
-                        }
-                    }
-                } else {
-                    tracing::debug!("No HTTP redirect detected for {}", target);
-                }
-            }
-            Err(e) => {
-                tracing::debug!("HTTP redirect detection failed for {}: {}", target, e);
-            }
+    if scan_result.handshake_complete && opts.follow_redirects {
+        let redirect_opts = RedirectOptions {
+            trust_anchors: opts.handshake.trust_anchors.clone(),
+            ..RedirectOptions::default()
+        };
+        // Reported in http_redirect only: the target's own certificate and
+        // analysis are never replaced by the destination's.
+        match follow_redirects(target, &redirect_opts).await {
+            Ok(redirect_info) => scan_result.http_redirect = Some(redirect_info),
+            Err(e) => tracing::debug!("HTTP redirect following failed for {}: {}", target, e),
         }
-    } else {
-        tracing::debug!(
-            "Skipping HTTP redirect detection: handshake not complete for {}",
-            target
-        );
     }
 
     let total_scan_duration = scan_start.elapsed();

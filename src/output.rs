@@ -152,6 +152,7 @@ impl OutputFormatter {
             "handshake_complete": result.handshake_complete,
             "pqc_detected": result.analysis.pqc_detected,
             "fallback": result.fallback,
+            "http_redirect": result.http_redirect,
             "analysis": self.format_analysis_json(result),
             "handshake_duration_ms": result.handshake_duration_ms,
             "client_profile_used": result.client_profile_used,
