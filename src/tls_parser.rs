@@ -11,7 +11,7 @@ pub enum TlsMessageType {
     Finished = 20,
 }
 
-/// TLS extension types
+/// TLS extension types used by the parser
 #[derive(Debug, Clone, PartialEq)]
 pub enum TlsExtensionType {
     ServerName = 0,
@@ -19,24 +19,7 @@ pub enum TlsExtensionType {
     SignatureAlgorithms = 13,
     KeyShare = 51,
     SupportedVersions = 43,
-    // PQC extensions
-    KemExtension = 65024,      // 0xFE00
-    KemGroupExtension = 65025, // 0xFE01
 }
-
-/// PQC group identification
-/// FIXED: Updated to match IANA registry - PQC groups are not in a single range
-/// Instead, we check for specific IANA-registered codepoints
-///
-/// ML-KEM: 512-514
-/// Hybrid groups: 4587-4592, 25497-25498 (legacy)
-/// Private use range: 65024-65279 (not standardized, implementation-specific)
-pub const PQC_GROUP_MLKEM_MIN: u16 = 512;
-pub const PQC_GROUP_MLKEM_MAX: u16 = 514;
-pub const PQC_GROUP_HYBRID_MIN: u16 = 4587;
-pub const PQC_GROUP_HYBRID_MAX: u16 = 4592;
-pub const PQC_GROUP_LEGACY_KYBER_MIN: u16 = 25497;
-pub const PQC_GROUP_LEGACY_KYBER_MAX: u16 = 25498;
 
 /// TLS message parser for PQC detection
 pub struct TlsMessageParser;
@@ -153,7 +136,7 @@ impl TlsMessageParser {
                 let cipher_suite_name = match cipher_suite {
                     0x1301 => "TLS13_AES_128_GCM_SHA256",
                     0x1302 => "TLS13_AES_256_GCM_SHA384",
-                    0x1303 => "TLS_CHACHA20_POLY1305_SHA256",
+                    0x1303 => "TLS13_CHACHA20_POLY1305_SHA256",
                     _ => return Ok(Some(format!("Unknown(0x{:04x})", cipher_suite))),
                 };
 
@@ -204,7 +187,7 @@ impl TlsMessageParser {
         let cipher_suite_name = match cipher_suite {
             0x1301 => "TLS13_AES_128_GCM_SHA256",
             0x1302 => "TLS13_AES_256_GCM_SHA384",
-            0x1303 => "TLS_CHACHA20_POLY1305_SHA256",
+            0x1303 => "TLS13_CHACHA20_POLY1305_SHA256",
             _ => return Ok(Some(format!("Unknown(0x{:04x})", cipher_suite))),
         };
 
@@ -290,7 +273,7 @@ impl TlsMessageParser {
             let cipher_suite_name = match cipher_suite {
                 0x1301 => "TLS13_AES_128_GCM_SHA256",
                 0x1302 => "TLS13_AES_256_GCM_SHA384",
-                0x1303 => "TLS_CHACHA20_POLY1305_SHA256",
+                0x1303 => "TLS13_CHACHA20_POLY1305_SHA256",
                 _ => return Ok(Some(format!("Unknown(0x{:04x})", cipher_suite))),
             };
 
@@ -498,192 +481,15 @@ impl TlsMessageParser {
         Ok(Some(selected_group))
     }
 
-    /// Parse supported_groups extension (used in ClientHello, not ServerHello)
-    /// NOTE: This is kept for reference but is not used for PQC detection in TLS 1.3
-    /// In TLS 1.3, ServerHello uses key_share extension, not supported_groups
-    fn parse_supported_groups_extension(&self, data: &[u8]) -> Result<Option<u16>> {
-        if data.len() < 2 {
-            return Err(anyhow!("Supported groups extension too short"));
-        }
-
-        let groups_len = ((data[0] as u16) << 8) | (data[1] as u16);
-        if data.len() < (groups_len + 2) as usize {
-            return Err(anyhow!("Supported groups data truncated"));
-        }
-
-        // Parse groups list
-        let mut pos = 2;
-        let groups_end = pos + groups_len as usize;
-
-        while pos < groups_end {
-            if pos + 1 >= groups_end {
-                return Err(anyhow!("Group entry truncated"));
-            }
-
-            let group = ((data[pos] as u16) << 8) | (data[pos + 1] as u16);
-
-            // Check if this is a PQC group (using IANA codepoints)
-            if self.is_pqc_group(group) {
-                return Ok(Some(group));
-            }
-
-            pos += 2;
-        }
-
-        Ok(None)
-    }
-
-    /// Parse EncryptedExtensions message to check for KEM extensions
-    pub fn parse_encrypted_extensions_kem(&self, data: &[u8]) -> Result<Option<u16>> {
-        if data.len() < 6 {
-            return Err(anyhow!("EncryptedExtensions too short"));
-        }
-
-        // Check message type
-        if data[0] != TlsMessageType::EncryptedExtensions as u8 {
-            return Err(anyhow!("Not an EncryptedExtensions message"));
-        }
-
-        // Parse message length (3 bytes, big-endian)
-        let msg_len = ((data[1] as u32) << 16) | ((data[2] as u32) << 8) | (data[3] as u32);
-
-        if data.len() < (msg_len + 4) as usize {
-            return Err(anyhow!("EncryptedExtensions message incomplete"));
-        }
-
-        // Skip protocol version (2 bytes)
-        let mut pos = 6;
-
-        // Parse extensions
-        if pos + 1 >= data.len() {
-            return Err(anyhow!("EncryptedExtensions truncated at extensions"));
-        }
-
-        let extensions_len = ((data[pos] as u16) << 8) | (data[pos + 1] as u16);
-        pos += 2;
-
-        let extensions_end = pos + extensions_len as usize;
-        if extensions_end > data.len() {
-            return Err(anyhow!("Extensions length exceeds message"));
-        }
-
-        // Parse each extension
-        while pos < extensions_end {
-            if pos + 3 >= extensions_end {
-                return Err(anyhow!("Extension header truncated"));
-            }
-
-            let ext_type = ((data[pos] as u16) << 8) | (data[pos + 1] as u16);
-            let ext_len = ((data[pos + 2] as u16) << 8) | (data[pos + 3] as u16);
-            pos += 4;
-
-            if pos + ext_len as usize > extensions_end {
-                return Err(anyhow!("Extension data truncated"));
-            }
-
-            // NOTE: KEM extensions (0xFE00/0xFE01) are experimental and not standardized
-            // In practice, PQC groups are negotiated via key_share extension using IANA-registered group IDs
-            // These extensions are kept for backward compatibility but may not be used in real implementations
-            if ext_type == TlsExtensionType::KemExtension as u16 {
-                return self.parse_kem_extension(&data[pos..pos + ext_len as usize]);
-            }
-
-            if ext_type == TlsExtensionType::KemGroupExtension as u16 {
-                return self.parse_kem_group_extension(&data[pos..pos + ext_len as usize]);
-            }
-
-            pos += ext_len as usize;
-        }
-
-        Ok(None)
-    }
-
-    /// Parse KEM extension to extract selected KEM ID
-    fn parse_kem_extension(&self, data: &[u8]) -> Result<Option<u16>> {
-        if data.len() < 2 {
-            return Err(anyhow!("KEM extension too short"));
-        }
-
-        // KEM extension contains selected_kem_id (2 bytes)
-        let kem_id = ((data[0] as u16) << 8) | (data[1] as u16);
-
-        // Validate that this is a PQC KEM ID (using IANA codepoints)
-        if self.is_pqc_group(kem_id) {
-            Ok(Some(kem_id))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Parse KEM group extension to extract selected KEM group
-    fn parse_kem_group_extension(&self, data: &[u8]) -> Result<Option<u16>> {
-        if data.len() < 2 {
-            return Err(anyhow!("KEM group extension too short"));
-        }
-
-        // KEM group extension contains selected_kem_group (2 bytes)
-        let kem_group = ((data[0] as u16) << 8) | (data[1] as u16);
-
-        // Validate that this is a PQC group (using IANA codepoints)
-        if self.is_pqc_group(kem_group) {
-            Ok(Some(kem_group))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Map PQC group ID to algorithm name
-    /// FIXED: Updated to match IANA registry codepoints
+    /// Map a named-group codepoint to its IANA registry name.
+    /// Returns None for codepoints that are not in [`crate::constants::NAMED_GROUPS`].
     pub fn group_id_to_algorithm(&self, group_id: u16) -> Option<String> {
-        match group_id {
-            // ML-KEM family (IANA: 512-514)
-            512 => Some("ML-KEM-512".to_string()),
-            513 => Some("ML-KEM-768".to_string()),
-            514 => Some("ML-KEM-1024".to_string()),
-
-            // Hybrid groups (IANA: 4587-4592)
-            4587 => Some("X25519ML-KEM-512".to_string()),
-            4588 => Some("X25519ML-KEM-768".to_string()),
-            4589 => Some("X25519ML-KEM-1024".to_string()),
-            4590 => Some("P256ML-KEM-512".to_string()),
-            4591 => Some("P256ML-KEM-768".to_string()),
-            4592 => Some("P256ML-KEM-1024".to_string()),
-
-            // Legacy Kyber groups (IANA: 25497-25498, obsolete)
-            25497 => Some("X25519Kyber768Draft00".to_string()),
-            25498 => Some("X25519Kyber512Draft00".to_string()),
-
-            // Classical groups (for reference, not PQC)
-            0x001d => Some("X25519".to_string()),
-            0x0017 => Some("P-256".to_string()),
-            0x0018 => Some("P-384".to_string()),
-            0x0019 => Some("P-521".to_string()),
-
-            // Unknown PQC groups (fallback)
-            _ if self.is_pqc_group(group_id) => Some(format!("PQC-Group-{}", group_id)),
-            _ => None,
-        }
+        crate::constants::named_group(group_id).map(|g| g.name.to_string())
     }
 
-    /// Validate if a group ID is a PQC group
-    /// FIXED: Updated to check IANA-registered PQC codepoints
+    /// True if the group includes a post-quantum KEM (hybrid or pure).
     pub fn is_pqc_group(&self, group_id: u16) -> bool {
-        // ML-KEM groups (512-514)
-        if (PQC_GROUP_MLKEM_MIN..=PQC_GROUP_MLKEM_MAX).contains(&group_id) {
-            return true;
-        }
-
-        // Hybrid groups (4587-4592)
-        if (PQC_GROUP_HYBRID_MIN..=PQC_GROUP_HYBRID_MAX).contains(&group_id) {
-            return true;
-        }
-
-        // Legacy Kyber groups (25497-25498)
-        if (PQC_GROUP_LEGACY_KYBER_MIN..=PQC_GROUP_LEGACY_KYBER_MAX).contains(&group_id) {
-            return true;
-        }
-
-        false
+        crate::constants::is_pqc_group(group_id)
     }
 }
 
@@ -694,45 +500,70 @@ mod tests {
     #[test]
     fn test_pqc_group_range() {
         let parser = TlsMessageParser::new();
-
-        // Test IANA-registered PQC groups
-        assert!(parser.is_pqc_group(512)); // ML-KEM-512
-        assert!(parser.is_pqc_group(513)); // ML-KEM-768
-        assert!(parser.is_pqc_group(514)); // ML-KEM-1024
-        assert!(parser.is_pqc_group(4588)); // X25519ML-KEM-768
-        assert!(parser.is_pqc_group(25497)); // X25519Kyber768Draft00 (legacy)
-        assert!(!parser.is_pqc_group(0x001d)); // X25519 (classical)
+        assert!(parser.is_pqc_group(512)); // MLKEM512
+        assert!(parser.is_pqc_group(513)); // MLKEM768
+        assert!(parser.is_pqc_group(514)); // MLKEM1024
+        assert!(parser.is_pqc_group(4587)); // SecP256r1MLKEM768
+        assert!(parser.is_pqc_group(4588)); // X25519MLKEM768
+        assert!(parser.is_pqc_group(25497)); // X25519Kyber768Draft00 (obsolete)
+        assert!(!parser.is_pqc_group(0x001d)); // x25519
         assert!(!parser.is_pqc_group(0x0000));
     }
 
     #[test]
     fn test_group_id_to_algorithm() {
         let parser = TlsMessageParser::new();
-
         assert_eq!(
-            parser.group_id_to_algorithm(512),
-            Some("ML-KEM-512".to_string())
+            parser.group_id_to_algorithm(513).as_deref(),
+            Some("MLKEM768")
         );
         assert_eq!(
-            parser.group_id_to_algorithm(513),
-            Some("ML-KEM-768".to_string())
+            parser.group_id_to_algorithm(4587).as_deref(),
+            Some("SecP256r1MLKEM768")
         );
         assert_eq!(
-            parser.group_id_to_algorithm(514),
-            Some("ML-KEM-1024".to_string())
+            parser.group_id_to_algorithm(4588).as_deref(),
+            Some("X25519MLKEM768")
         );
         assert_eq!(
-            parser.group_id_to_algorithm(4588),
-            Some("X25519ML-KEM-768".to_string())
+            parser.group_id_to_algorithm(4589).as_deref(),
+            Some("SecP384r1MLKEM1024")
         );
         assert_eq!(
-            parser.group_id_to_algorithm(25497),
-            Some("X25519Kyber768Draft00".to_string())
+            parser.group_id_to_algorithm(25498).as_deref(),
+            Some("SecP256r1Kyber768Draft00")
         );
         assert_eq!(
-            parser.group_id_to_algorithm(0x001d),
-            Some("X25519".to_string())
-        ); // Classical
+            parser.group_id_to_algorithm(0x001d).as_deref(),
+            Some("x25519")
+        );
         assert_eq!(parser.group_id_to_algorithm(0x0000), None);
+    }
+
+    #[test]
+    fn test_parse_server_hello_group_x25519mlkem768() {
+        // Minimal TLS 1.3 ServerHello: legacy_version, random, empty session id,
+        // cipher suite 0x1301, null compression, key_share extension (group 0x11ec).
+        let mut body = vec![0x03, 0x03];
+        body.extend_from_slice(&[0u8; 32]);
+        body.push(0); // session id len
+        body.extend_from_slice(&[0x13, 0x01, 0x00]);
+        let key_share = [0x11, 0xec, 0x00, 0x00];
+        let mut exts = vec![0x00, 0x33, 0x00, key_share.len() as u8];
+        exts.extend_from_slice(&key_share);
+        body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+        body.extend_from_slice(&exts);
+        let mut msg = vec![0x02, 0x00, 0x00, body.len() as u8];
+        msg.extend_from_slice(&body);
+
+        let parser = TlsMessageParser::new();
+        assert_eq!(parser.parse_server_hello_group(&msg).unwrap(), Some(0x11ec));
+        assert_eq!(
+            parser
+                .parse_server_hello_cipher_suite(&msg)
+                .unwrap()
+                .as_deref(),
+            Some("TLS13_AES_128_GCM_SHA256")
+        );
     }
 }

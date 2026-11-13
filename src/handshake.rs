@@ -14,43 +14,6 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::UnixTime;
 use rustls::{DigitallySignedStruct, Error, SignatureScheme};
 
-/// Wrapper to convert Box<dyn ServerCertVerifier> to Arc<dyn ServerCertVerifier>
-#[derive(Debug)]
-struct VerifierWrapper(Box<dyn ServerCertVerifier>);
-
-impl ServerCertVerifier for VerifierWrapper {
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        intermediates: &[CertificateDer<'_>],
-        server_name: &ServerName<'_>,
-        ocsp_response: &[u8],
-        now: UnixTime,
-    ) -> Result<ServerCertVerified, Error> {
-        self.0
-            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
-    }
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, Error> {
-        self.0.verify_tls12_signature(message, cert, dss)
-    }
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, Error> {
-        self.0.verify_tls13_signature(message, cert, dss)
-    }
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.0.supported_verify_schemes()
-    }
-}
-
 /// Verifier that captures TLS 1.3 CertificateVerify signature scheme (suggestion 8.2).
 /// This allows us to detect PQC signatures in TLS 1.3 without decrypting records.
 /// Only `verify_tls13_signature` sets the captured scheme; nothing else should clear or set it,
@@ -740,15 +703,10 @@ impl HandshakeEngine {
             }
         }
 
-        // Fallback: Extract from cipher suite name if key_share parsing failed
+        // Fallback: the group rustls reports as negotiated (observed, not guessed).
         if key_exchange.is_empty() {
-            let cs_name = cipher_suite.to_lowercase();
-            if cs_name.contains("ecdhe") || cs_name.contains("x25519") {
-                key_exchange.push("X25519".to_string());
-            } else if cs_name.contains("dhe") {
-                key_exchange.push("DHE".to_string());
-            } else if cs_name.contains("psk") {
-                key_exchange.push("PSK".to_string());
+            if let Some(group) = client.negotiated_key_exchange_group() {
+                key_exchange.push(crate::constants::get_group_name(u16::from(group.name())));
             }
         }
 
@@ -1180,8 +1138,7 @@ impl HandshakeEngine {
         let _ = default_provider().install_default();
 
         // In rustls 0.23, RootCertStore can be created from webpki_roots directly
-        let root_store =
-            crate::handshake::webpki_root_store();
+        let root_store = crate::handshake::webpki_root_store();
 
         // FIXED: Create shared mutex to capture TLS 1.3 CertificateVerify signature scheme
         let captured_scheme: Arc<Mutex<Option<SignatureScheme>>> = Arc::new(Mutex::new(None));
@@ -1444,64 +1401,6 @@ impl HandshakeEngine {
     // These are replaced by constants::get_signature_algorithm_name and constants::is_pqc_signature_algorithm(u16)
     // which work with codepoints directly, not string-based heuristics or profile-based assumptions
 
-    /// Get the set of extension IDs offered in ClientHello based on profile
-    fn get_offered_extensions(&self) -> HashSet<u16> {
-        // FIXED: Use constants from constants.rs instead of hardcoded values
-        use crate::constants::{
-            EXT_ALPN, EXT_KEY_SHARE, EXT_PQC_KEM, EXT_PQC_KEM_GROUP, EXT_PSK_KEY_EXCHANGE_MODES,
-            EXT_SERVER_NAME, EXT_SIGNATURE_ALGORITHMS, EXT_SUPPORTED_GROUPS,
-            EXT_SUPPORTED_VERSIONS,
-        };
-
-        let mut extensions = HashSet::new();
-
-        // Always include basic extensions
-        extensions.insert(EXT_SERVER_NAME);
-        extensions.insert(EXT_SUPPORTED_VERSIONS);
-
-        match self.profile {
-            HandshakeProfile::CloudflarePqc => {
-                extensions.insert(EXT_SUPPORTED_GROUPS);
-                extensions.insert(EXT_SIGNATURE_ALGORITHMS);
-                extensions.insert(EXT_KEY_SHARE);
-                extensions.insert(EXT_ALPN);
-                extensions.insert(0x0005); // status_request (OCSP) - TODO: add to constants.rs
-                extensions.insert(EXT_PSK_KEY_EXCHANGE_MODES);
-                extensions.insert(0x002a); // early_data - TODO: add to constants.rs
-                                           // PQC extensions
-                extensions.insert(EXT_PQC_KEM);
-                extensions.insert(EXT_PQC_KEM_GROUP);
-            }
-            HandshakeProfile::HybridPqc => {
-                extensions.insert(EXT_SUPPORTED_GROUPS);
-                extensions.insert(EXT_SIGNATURE_ALGORITHMS);
-                extensions.insert(EXT_KEY_SHARE);
-                extensions.insert(EXT_ALPN);
-                // PQC extensions
-                extensions.insert(EXT_PQC_KEM);
-                extensions.insert(EXT_PQC_KEM_GROUP);
-            }
-            HandshakeProfile::PqcOnly => {
-                extensions.insert(EXT_SUPPORTED_GROUPS);
-                extensions.insert(EXT_SIGNATURE_ALGORITHMS);
-                extensions.insert(EXT_KEY_SHARE);
-                // PQC extensions
-                extensions.insert(EXT_PQC_KEM);
-                extensions.insert(EXT_PQC_KEM_GROUP);
-            }
-            HandshakeProfile::Standard => {
-                // FIXED: Add key_share and supported_groups for TLS 1.3 compatibility
-                // Even though Standard profile doesn't offer PQC, it still needs these extensions for TLS 1.3
-                extensions.insert(EXT_SUPPORTED_GROUPS);
-                extensions.insert(EXT_SIGNATURE_ALGORITHMS);
-                extensions.insert(EXT_KEY_SHARE);
-                // Standard profile does NOT offer PQC extensions
-            }
-        }
-
-        extensions
-    }
-
     // Note: Removed placeholder server-specific certificate info methods
     // Real certificate parsing should be used instead
 
@@ -1564,8 +1463,7 @@ impl HandshakeEngine {
         let start_time = Instant::now();
 
         // Create TLS 1.2 configuration
-        let root_store =
-            crate::handshake::webpki_root_store();
+        let root_store = crate::handshake::webpki_root_store();
 
         // PATH A: Use TLS 1.3 + 1.2 instead of only TLS 1.2 for better compatibility
         let mut config = ClientConfig::builder()
@@ -1638,39 +1536,12 @@ impl HandshakeEngine {
             }
         }
 
-        // FIXED: Extract key exchange from actual cipher suite and TLS version
+        // Key exchange: the group rustls reports as negotiated. Left empty when
+        // rustls does not report one; never defaulted to a guess.
         let mut key_exchange = Vec::new();
-        let cs_name = cipher_suite.to_lowercase();
         let tls_is_13 = tls_version == "1.3";
-
-        // For TLS 1.3, try to extract from cipher suite name or use common defaults
-        if tls_is_13 {
-            // TLS 1.3 always uses key_share extension
-            // Common groups: X25519, P-256, P-384, P-521
-            // Try to detect from cipher suite name or use X25519 as default (most common)
-            if cs_name.contains("x25519") || cs_name.contains("curve25519") {
-                key_exchange.push("X25519".to_string());
-            } else if cs_name.contains("p256") || cs_name.contains("secp256r1") {
-                key_exchange.push("P-256".to_string());
-            } else if cs_name.contains("p384") || cs_name.contains("secp384r1") {
-                key_exchange.push("P-384".to_string());
-            } else if cs_name.contains("p521") || cs_name.contains("secp521r1") {
-                key_exchange.push("P-521".to_string());
-            } else {
-                // For TLS 1.3, default to X25519 (most common) if we can't determine
-                // This is better than leaving empty, as TLS 1.3 always has a key exchange
-                key_exchange.push("X25519".to_string());
-            }
-        } else {
-            // TLS 1.2: extract from cipher suite name
-            if cs_name.contains("ecdhe") {
-                key_exchange.push("ECDHE".to_string());
-            } else if cs_name.contains("dhe") {
-                key_exchange.push("DHE".to_string());
-            } else if cs_name.contains("psk") {
-                key_exchange.push("PSK".to_string());
-            }
-            // If we couldn't determine, leave empty (honest reporting for TLS 1.2)
+        if let Some(group) = tls_stream.get_ref().1.negotiated_key_exchange_group() {
+            key_exchange.push(crate::constants::get_group_name(u16::from(group.name())));
         }
 
         // FIXED: Populate extension_map based on TLS version and actual handshake data
@@ -1757,8 +1628,7 @@ impl HandshakeEngine {
         use tokio_rustls::TlsConnector;
 
         // Create TLS configuration supporting both TLS 1.3 and 1.2
-        let root_store =
-            crate::handshake::webpki_root_store();
+        let root_store = crate::handshake::webpki_root_store();
 
         // PATH A: Use TLS 1.3 + 1.2 instead of only TLS 1.2 for better compatibility
         let mut config = ClientConfig::builder()
@@ -1840,49 +1710,4 @@ impl HandshakeEngine {
 
     // FIXED: Removed should_query_ct_logs - use config.always_query_ct_logs instead
     // Hostname-based detection is removed for production use
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_standard_profile_no_pqc_extensions() {
-        use crate::constants::{EXT_PQC_KEM, EXT_PQC_KEM_GROUP};
-
-        let standard_engine = HandshakeEngine::new(HandshakeProfile::Standard);
-        let offered_extensions = standard_engine.get_offered_extensions();
-
-        // Standard profile should NOT offer PQC extensions
-        assert!(!offered_extensions.contains(&EXT_PQC_KEM));
-        assert!(!offered_extensions.contains(&EXT_PQC_KEM_GROUP));
-
-        // Standard profile should offer basic extensions
-        assert!(offered_extensions.contains(&0x0000)); // server_name
-        assert!(offered_extensions.contains(&0x002b)); // supported_versions
-        assert!(offered_extensions.contains(&0x000d)); // signature_algorithms
-    }
-
-    #[test]
-    fn test_pqc_profiles_offer_pqc_extensions() {
-        use crate::constants::{EXT_PQC_KEM, EXT_PQC_KEM_GROUP};
-
-        // Test CloudflarePqc profile
-        let cloudflare_engine = HandshakeEngine::new(HandshakeProfile::CloudflarePqc);
-        let cloudflare_extensions = cloudflare_engine.get_offered_extensions();
-        assert!(cloudflare_extensions.contains(&EXT_PQC_KEM));
-        assert!(cloudflare_extensions.contains(&EXT_PQC_KEM_GROUP));
-
-        // Test HybridPqc profile
-        let hybrid_engine = HandshakeEngine::new(HandshakeProfile::HybridPqc);
-        let hybrid_extensions = hybrid_engine.get_offered_extensions();
-        assert!(hybrid_extensions.contains(&EXT_PQC_KEM));
-        assert!(hybrid_extensions.contains(&EXT_PQC_KEM_GROUP));
-
-        // Test PqcOnly profile
-        let pqc_only_engine = HandshakeEngine::new(HandshakeProfile::PqcOnly);
-        let pqc_only_extensions = pqc_only_engine.get_offered_extensions();
-        assert!(pqc_only_extensions.contains(&EXT_PQC_KEM));
-        assert!(pqc_only_extensions.contains(&EXT_PQC_KEM_GROUP));
-    }
 }

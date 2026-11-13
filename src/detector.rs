@@ -62,15 +62,6 @@ impl PqcDetector {
             }
         }
 
-        // NOTE: EncryptedExtensions is a separate message from ServerHello and is encrypted in TLS 1.3
-        // We cannot parse it from raw_server_hello. This path is disabled until we capture raw_encrypted_extensions
-        // For now, PQC detection relies on ServerHello.key_share extension which is unencrypted
-        // if let Ok(Some(kem_id)) = tls_parser.parse_encrypted_extensions_kem(&handshake_result.raw_encrypted_extensions) {
-        //     if tls_parser.is_pqc_group(kem_id) {
-        //         return true;
-        //     }
-        // }
-
         false
     }
 
@@ -84,118 +75,27 @@ impl PqcDetector {
         }
     }
 
-    /// Checks if a key exchange algorithm is post-quantum
+    /// Checks if a key exchange group name is post-quantum (hybrid or pure),
+    /// using the IANA registry in [`crate::constants`].
     fn is_pqc_key_exchange(&self, algorithm: &str) -> bool {
-        let pqc_algorithms = [
-            // ML-KEM family (NIST PQC winners)
-            "ML-KEM-512",
-            "ML-KEM-768",
-            "ML-KEM-1024",
-            // Hybrid groups (X25519 + ML-KEM, P256 + ML-KEM)
-            "X25519ML-KEM-512",
-            "X25519ML-KEM-768",
-            "X25519ML-KEM-1024",
-            "X25519+ML-KEM-512",
-            "X25519+ML-KEM-768",
-            "X25519+ML-KEM-1024",
-            "P256ML-KEM-512",
-            "P256ML-KEM-768",
-            "P256ML-KEM-1024",
-            "P256+ML-KEM-512",
-            "P256+ML-KEM-768",
-            "P256+ML-KEM-1024",
-            // Kyber family (original names, still in use)
-            "Kyber512",
-            "Kyber768",
-            "Kyber1024",
-            "X25519Kyber768",
-            "X25519Kyber512",
-            // Alternative spellings
-            "MLKEM512",
-            "MLKEM768",
-            "MLKEM1024",
-            "KYBER512",
-            "KYBER768",
-            "KYBER1024",
-            // Experimental/alternative KEMs
-            "HQC",
-            "Classic-McEliece",
-            "BIKE",
-            "SIKE",
-            "NTRU",
-            "FRODO",
-            // Generic PQC indicators
-            "PQC",
-            "Post-Quantum",
-            "Quantum-Resistant",
-        ];
-
-        let algorithm_upper = algorithm.to_uppercase();
-        pqc_algorithms
-            .iter()
-            .any(|&pqc| algorithm_upper.contains(&pqc.to_uppercase()))
+        crate::constants::named_group_by_name(algorithm)
+            .is_some_and(|g| g.kind != crate::constants::GroupKind::Classical)
     }
 
-    /// Checks if a signature algorithm is post-quantum
+    /// Checks if a signature algorithm name is post-quantum: a PQC TLS
+    /// SignatureScheme name or a PQC X.509 OID name from [`crate::constants`].
     fn is_pqc_signature_algorithm(&self, algorithm: &str) -> bool {
-        let pqc_signatures = [
-            // Dilithium family (NIST PQC winners)
-            "Dilithium2",
-            "Dilithium3",
-            "Dilithium5",
-            "DILITHIUM2",
-            "DILITHIUM3",
-            "DILITHIUM5",
-            // Falcon family
-            "Falcon512",
-            "Falcon1024",
-            "FALCON512",
-            "FALCON1024",
-            // SPHINCS+ family
-            "SPHINCS+",
-            "SPHINCS",
-            "SphincsPlus",
-            "Sphincs",
-            // Alternative spellings
-            "DILITHIUM-2",
-            "DILITHIUM-3",
-            "DILITHIUM-5",
-            "FALCON-512",
-            "FALCON-1024",
-            // Generic PQC signature indicators
-            "PQC-Signature",
-            "Quantum-Signature",
-            "Post-Quantum-Signature",
-        ];
-
-        let algorithm_upper = algorithm.to_uppercase();
-        pqc_signatures
-            .iter()
-            .any(|&pqc| algorithm_upper.contains(pqc))
+        crate::constants::is_pqc_signature_scheme_name(algorithm)
+            || crate::constants::PQC_OIDS.iter().any(|o| {
+                o.kind != crate::constants::OidKind::MlKem && o.name.eq_ignore_ascii_case(algorithm)
+            })
     }
 
-    /// Checks if a public key algorithm is post-quantum
+    /// Checks if a certificate public key algorithm name is post-quantum.
     fn is_pqc_public_key_algorithm(&self, pub_key_alg: &str) -> bool {
-        let normalized = pub_key_alg.to_lowercase();
-
-        // Key encapsulation mechanisms
-        if normalized.contains("kyber")
-            || normalized.contains("ntru")
-            || normalized.contains("saber")
-            || normalized.contains("frodo")
-            || normalized.contains("bike")
-            || normalized.contains("hqc")
-            || normalized.contains("mceliece")
-        {
-            return true;
-        }
-
-        // Signature algorithms that can also be public key algorithms
-        if self.is_pqc_signature_algorithm(pub_key_alg) {
-            return true;
-        }
-
-        false
+        crate::constants::PQC_OIDS
+            .iter()
+            .any(|o| o.name.eq_ignore_ascii_case(pub_key_alg))
     }
 
     /// Provides detailed analysis of PQC support
@@ -232,6 +132,11 @@ impl PqcDetector {
             if self.is_pqc_key_exchange(kex) {
                 analysis.pqc_key_exchange.push(kex.clone());
                 analysis.pqc_detected = true;
+                if crate::constants::named_group_by_name(kex)
+                    .is_some_and(|g| g.kind == crate::constants::GroupKind::Hybrid)
+                {
+                    analysis.hybrid_detected = true;
+                }
             } else if self.is_classical_key_exchange(kex) {
                 analysis.classical_fallback_available = true;
             }
@@ -370,36 +275,17 @@ impl PqcDetector {
         ));
     }
 
-    /// Extract client-offered KEMs based on the handshake profile
-    fn extract_client_offered_kems(&self, handshake_result: &HandshakeResult) -> Vec<String> {
-        match handshake_result.client_profile_used {
-            crate::types::HandshakeProfile::CloudflarePqc => {
-                vec![
-                    "ML-KEM-768".to_string(),
-                    "ML-KEM-512".to_string(),
-                    "X25519".to_string(),
-                ]
-            }
-            crate::types::HandshakeProfile::HybridPqc => {
-                vec![
-                    "ML-KEM-768".to_string(),
-                    "Kyber768".to_string(),
-                    "X25519".to_string(),
-                    "P-256".to_string(),
-                ]
-            }
-            crate::types::HandshakeProfile::PqcOnly => {
-                vec![
-                    "ML-KEM-768".to_string(),
-                    "ML-KEM-1024".to_string(),
-                    "Kyber768".to_string(),
-                    "Kyber1024".to_string(),
-                ]
-            }
-            crate::types::HandshakeProfile::Standard => {
-                vec!["X25519".to_string(), "P-256".to_string()]
-            }
-        }
+    /// Groups offered in our ClientHello, in preference order.
+    ///
+    /// The handshake profile does not change the ClientHello: every profile
+    /// uses the rustls aws-lc-rs default provider, so this reports what that
+    /// provider actually offers rather than what the profile name suggests.
+    fn extract_client_offered_kems(&self, _handshake_result: &HandshakeResult) -> Vec<String> {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .kx_groups
+            .iter()
+            .map(|g| crate::constants::get_group_name(u16::from(g.name())))
+            .collect()
     }
 
     /// Extract client extensions from handshake result
@@ -421,18 +307,10 @@ impl PqcDetector {
         }
 
         // Add key_share (always present in TLS 1.3)
-        extensions.push((0x001c, Some(32))); // key_share - typically 32 bytes
+        extensions.push((crate::constants::EXT_KEY_SHARE, Some(32))); // key_share - estimated length, not measured
 
         // Add signature_algorithms (always present in TLS 1.3)
         extensions.push((0x000d, Some(8))); // signature_algorithms - typically 8 bytes
-
-        // Add PQC extensions if detected
-        if handshake_result.pqc_extensions.kem {
-            extensions.push((0xfe00, Some(8))); // kem - typically 8 bytes
-        }
-        if handshake_result.pqc_extensions.kem_group {
-            extensions.push((0xfe01, Some(8))); // kem_group - typically 8 bytes
-        }
 
         extensions
     }
@@ -452,7 +330,7 @@ impl PqcDetector {
 
         // Add extensions that were actually used with estimated data lengths
         if handshake_result.extension_map.key_share {
-            extensions.push((0x001c, Some(32))); // key_share - typically 32 bytes
+            extensions.push((crate::constants::EXT_KEY_SHARE, Some(32))); // key_share - estimated length, not measured
         }
         if handshake_result.extension_map.signature_algorithms {
             extensions.push((0x000d, Some(8))); // signature_algorithms - typically 8 bytes
@@ -460,36 +338,13 @@ impl PqcDetector {
         if has_classical_kex && handshake_result.extension_map.supported_versions {
             extensions.push((0x000a, Some(16))); // supported_groups - typically 16 bytes
         }
-        if handshake_result.pqc_extensions.kem {
-            extensions.push((0xfe00, Some(8))); // kem - typically 8 bytes
-        }
-        if handshake_result.pqc_extensions.kem_group {
-            extensions.push((0xfe01, Some(8))); // kem_group - typically 8 bytes
-        }
 
         extensions
     }
 
     fn is_classical_key_exchange(&self, kex: &str) -> bool {
-        matches!(
-            kex.to_lowercase().as_str(),
-            "x25519"
-                | "x448"
-                | "secp256r1"
-                | "secp384r1"
-                | "secp521r1"
-                | "prime256v1"
-                | "prime384v1"
-                | "prime521v1"
-                | "brainpoolp256r1"
-                | "brainpoolp384r1"
-                | "brainpoolp512r1"
-                | "ffdhe2048"
-                | "ffdhe3072"
-                | "ffdhe4096"
-                | "ffdhe6144"
-                | "ffdhe8192"
-        )
+        crate::constants::named_group_by_name(kex)
+            .is_some_and(|g| g.kind == crate::constants::GroupKind::Classical)
     }
 
     fn estimate_security_level(&self, analysis: &PqcAnalysis) -> SecurityLevel {
@@ -501,13 +356,11 @@ impl PqcDetector {
         let mut max_level = SecurityLevel::Low;
 
         for kex in &analysis.pqc_key_exchange {
-            let level = match kex.to_lowercase().as_str() {
-                "kyber512" => SecurityLevel::Low,
-                "kyber768" => SecurityLevel::Medium,
-                "kyber1024" => SecurityLevel::High,
-                "frodo640" => SecurityLevel::Low,
-                "frodo976" => SecurityLevel::Medium,
-                _ => SecurityLevel::Medium, // Default for unknown PQC algorithms
+            let pq_kem = crate::constants::named_group_by_name(kex).and_then(|g| g.pq_kem);
+            let level = match pq_kem {
+                Some(k) if k.contains("512") => SecurityLevel::Low,
+                Some(k) if k.contains("1024") => SecurityLevel::High,
+                _ => SecurityLevel::Medium,
             };
             if level as u8 > max_level as u8 {
                 max_level = level;
@@ -515,13 +368,13 @@ impl PqcDetector {
         }
 
         for sig_alg in &analysis.pqc_signature_algorithms {
-            let level = match sig_alg.to_lowercase().as_str() {
-                alg if alg.contains("dilithium2") => SecurityLevel::Low,
-                alg if alg.contains("dilithium3") => SecurityLevel::Medium,
-                alg if alg.contains("dilithium5") => SecurityLevel::High,
-                alg if alg.contains("falcon512") => SecurityLevel::Low,
-                alg if alg.contains("falcon1024") => SecurityLevel::High,
-                _ => SecurityLevel::Medium,
+            let alg = sig_alg.to_lowercase();
+            let level = if alg.contains("mldsa44") || alg.contains("ml-dsa-44") {
+                SecurityLevel::Low
+            } else if alg.contains("mldsa87") || alg.contains("ml-dsa-87") {
+                SecurityLevel::High
+            } else {
+                SecurityLevel::Medium
             };
             if level as u8 > max_level as u8 {
                 max_level = level;
@@ -560,55 +413,8 @@ impl PqcDetector {
             return analysis;
         }
 
-        // Use TLS parser for proper PQC detection
-        let tls_parser = TlsMessageParser::new();
-        let mut server_group = None;
-        let mut kem_id = None;
-
-        // Parse ServerHello for PQC group selection
-        if let Ok(group) = tls_parser.parse_server_hello_group(&result.raw_server_hello) {
-            server_group = group;
-        }
-
-        // Parse EncryptedExtensions for KEM extension
-        if let Ok(kem) = tls_parser.parse_encrypted_extensions_kem(&result.raw_server_hello) {
-            kem_id = kem;
-        }
-
-        // Validate PQC detection: ServerHello group must be in PQC range AND KEM extension must match
-        if let (Some(server_group_id), Some(kem_extension_id)) = (server_group, kem_id) {
-            if tls_parser.is_pqc_group(server_group_id)
-                && tls_parser.is_pqc_group(kem_extension_id)
-                && server_group_id == kem_extension_id
-            {
-                // Valid PQC detection - set hybrid_detected = true
-                analysis.pqc_detected = true;
-                analysis.hybrid_detected = true;
-
-                // Map group ID to algorithm name
-                if let Some(alg_name) = tls_parser.group_id_to_algorithm(server_group_id) {
-                    analysis.pqc_key_exchange.push(alg_name.clone());
-                    // For hybrid, show both classical and PQC components
-                    if analysis.classical_fallback_available {
-                        analysis.key_exchange = format!("Hybrid ({} + classical)", alg_name);
-                    } else {
-                        analysis.key_exchange = alg_name;
-                    }
-                }
-
-                if crate::verbose() {
-                    println!("PQC detected via TLS parsing: ServerHello group 0x{:04X} matches KEM extension 0x{:04X}", 
-                             server_group_id, kem_extension_id);
-                }
-            }
-        }
-
-        // Enhanced hybrid detection: Check if multiple PQC algorithms are present
-        if analysis.pqc_key_exchange.len() > 1 {
-            analysis.hybrid_detected = true;
-            analysis.key_exchange = format!("Hybrid ({})", analysis.pqc_key_exchange.join(", "));
-        }
-
+        // The negotiated group is already in result.key_exchange: the handshake
+        // engine reads it from ServerHello.key_share (or from rustls).
         // Analyze cipher suite
         self.analyze_cipher_suite(result, &mut analysis);
 
@@ -737,136 +543,54 @@ impl PqcDetector {
     }
 
     fn analyze_cipher_suite(&self, result: &HandshakeResult, analysis: &mut PqcAnalysis) {
+        // TLS 1.3 cipher suites carry no key-exchange information; PQC is
+        // negotiated through supported_groups/key_share, never the suite.
+        analysis.cipher_suite = result.cipher_suite.clone();
         match result.cipher_suite.as_str() {
-            "TLS_AES_128_GCM_SHA256"
+            "TLS13_AES_128_GCM_SHA256"
+            | "TLS13_AES_256_GCM_SHA384"
+            | "TLS13_CHACHA20_POLY1305_SHA256"
+            | "TLS_AES_128_GCM_SHA256"
             | "TLS_AES_256_GCM_SHA384"
             | "TLS_CHACHA20_POLY1305_SHA256" => {
-                analysis.cipher_suite = result.cipher_suite.clone();
                 analysis.security_features.push("AEAD Cipher".to_string());
-                analysis.classical_fallback_available = true;
-            }
-            "TLS_HYBRID_X25519_MLKEM768_SHA384" | "TLS_HYBRID_ECDHE_KYBER768_X25519_SHA384" => {
-                analysis.cipher_suite = result.cipher_suite.clone();
-                analysis
-                    .security_features
-                    .push("PQC Hybrid Cipher".to_string());
-                analysis.pqc_detected = true;
-                analysis.hybrid_detected = true;
-                analysis.classical_fallback_available = true;
-            }
-            "Unknown(0x11ec)" => {
-                analysis.cipher_suite = "TLS_HYBRID_X25519_MLKEM768_SHA384".to_string();
-                analysis
-                    .security_features
-                    .push("PQC Hybrid Cipher".to_string());
-                analysis.pqc_detected = true;
-                analysis.hybrid_detected = true;
-                analysis.classical_fallback_available = true;
-            }
-            "Unknown(0x6399)" => {
-                analysis.cipher_suite = "TLS_HYBRID_ECDHE_KYBER768_X25519_SHA384".to_string();
-                analysis
-                    .security_features
-                    .push("PQC Hybrid Cipher".to_string());
-                analysis.pqc_detected = true;
-                analysis.hybrid_detected = true;
-                analysis.classical_fallback_available = true;
             }
             cipher if cipher.contains("ECDHE") => {
-                analysis.cipher_suite = cipher.to_string();
                 analysis.security_features.push("ECDHE".to_string());
                 analysis.classical_fallback_available = true;
             }
-            _ => {
-                analysis.cipher_suite = result.cipher_suite.clone();
-            }
+            _ => {}
         }
     }
 
     fn analyze_key_exchange(&self, result: &HandshakeResult, analysis: &mut PqcAnalysis) {
-        let mut has_classical = false;
-        let mut has_pqc = false;
+        use crate::constants::{named_group_by_name, GroupKind};
 
         for key_exchange in &result.key_exchange {
-            match key_exchange.as_str() {
-                "x25519" | "X25519" => {
-                    analysis.key_exchange = "X25519".to_string();
-                    analysis.security_features.push("X25519".to_string());
+            analysis.key_exchange = key_exchange.clone();
+            match named_group_by_name(key_exchange).map(|g| g.kind) {
+                Some(GroupKind::Classical) => {
+                    analysis.security_features.push(key_exchange.clone());
                     analysis.classical_fallback_available = true;
-                    has_classical = true;
                 }
-                "secp256r1" => {
-                    analysis.key_exchange = "SECP256R1".to_string();
-                    analysis.security_features.push("SECP256R1".to_string());
-                    analysis.classical_fallback_available = true;
-                    has_classical = true;
-                }
-                "ML-KEM-768" | "ML-KEM-512" | "ML-KEM-1024" => {
-                    analysis.key_exchange = key_exchange.to_string();
-                    analysis.pqc_key_exchange.push(key_exchange.to_string());
-                    // FIXED: Add PQC algorithms to security_features
-                    analysis.security_features.push(key_exchange.to_string());
+                Some(GroupKind::Hybrid) => {
+                    // A hybrid group combines ECDHE with a PQ KEM in one key share.
+                    analysis.pqc_key_exchange.push(key_exchange.clone());
+                    analysis.security_features.push(key_exchange.clone());
                     analysis.pqc_detected = true;
-                    has_pqc = true;
+                    analysis.hybrid_detected = true;
                 }
-                "Kyber768" | "Kyber512" | "Kyber1024" => {
-                    analysis.key_exchange = key_exchange.to_string();
-                    analysis.pqc_key_exchange.push(key_exchange.to_string());
-                    // FIXED: Add PQC algorithms to security_features
-                    analysis.security_features.push(key_exchange.to_string());
+                Some(GroupKind::PurePq) => {
+                    analysis.pqc_key_exchange.push(key_exchange.clone());
+                    analysis.security_features.push(key_exchange.clone());
                     analysis.pqc_detected = true;
-                    has_pqc = true;
                 }
-                key if key.contains("kyber") || key.contains("Kyber") => {
-                    analysis.key_exchange = key.to_string();
-                    analysis.pqc_key_exchange.push(key.to_string());
-                    // FIXED: Add PQC algorithms to security_features
-                    analysis.security_features.push(key.to_string());
-                    analysis.pqc_detected = true;
-                    has_pqc = true;
-                }
-                key if key.to_uppercase().contains("ML-KEM")
-                    || key.to_uppercase().contains("MLKEM")
-                    || key.to_uppercase().contains("X25519ML")
-                    || key.to_uppercase().contains("P256ML") =>
-                {
-                    analysis.key_exchange = key.to_string();
-                    analysis.pqc_key_exchange.push(key.to_string());
-                    // FIXED: Add PQC algorithms to security_features
-                    analysis.security_features.push(key.to_string());
-                    analysis.pqc_detected = true;
-                    has_pqc = true;
-                    // Hybrid groups contain both classical and PQC components
-                    if key.to_uppercase().contains("X25519ML")
-                        || key.to_uppercase().contains("P256ML")
-                    {
-                        analysis.hybrid_detected = true;
-                        analysis.classical_fallback_available = true;
-                    }
-                }
-                key if key.contains("dilithium") => {
-                    analysis.key_exchange = key.to_string();
-                    analysis.pqc_key_exchange.push(key.to_string());
-                    analysis.pqc_detected = true;
-                    has_pqc = true;
-                }
-                _ => {
-                    analysis.key_exchange = key_exchange.to_string();
-                }
+                None => {}
             }
         }
 
-        // Detect hybrid mode if both classical and PQC algorithms are present
-        if has_classical && has_pqc {
-            analysis.hybrid_detected = true;
-            analysis.classical_fallback_available = true;
-        }
-
-        // If we detected PQC but TLS version is 1.2, this indicates a fallback scenario
+        // PQC groups cannot be negotiated in TLS 1.2.
         if analysis.pqc_detected && result.tls_version == "1.2" {
-            if crate::verbose() {
-                println!("PQC detected but TLS 1.2 fallback occurred - this indicates server rejected PQC");
-            }
             analysis.pqc_detected = false;
             analysis.hybrid_detected = false;
             analysis.classical_fallback_available = true;
@@ -1068,30 +792,6 @@ impl PqcDetector {
             &cert_info.subject,
         )
     }
-
-    fn hostname_matches(&self, hostname: &str, cert_field: &str) -> bool {
-        // Handle wildcard matching according to RFC 6125
-        if let Some(domain) = cert_field.strip_prefix("*.") {
-            // Remove "*. "
-
-            // Wildcard can match the domain itself or one level subdomain
-            // *.pki.goog can match pki.goog or foo.pki.goog
-            if hostname == domain {
-                return true; // Exact domain match
-            }
-
-            if let Some(prefix) = hostname.strip_suffix(domain) {
-                // Check that there's exactly one level (no dots in prefix)
-                if !prefix.contains('.') && !prefix.is_empty() {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        // Exact match
-        hostname == cert_field
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1125,10 +825,12 @@ mod tests {
     fn test_pqc_key_exchange_detection() {
         let detector = PqcDetector::new();
 
-        assert!(detector.is_pqc_key_exchange("kyber1024"));
-        assert!(detector.is_pqc_key_exchange("KYBER768"));
-        assert!(detector.is_pqc_key_exchange("ntru"));
-        assert!(detector.is_pqc_key_exchange("frodo640"));
+        assert!(detector.is_pqc_key_exchange("X25519MLKEM768"));
+        assert!(detector.is_pqc_key_exchange("SecP256r1MLKEM768"));
+        assert!(detector.is_pqc_key_exchange("MLKEM1024"));
+        assert!(detector.is_pqc_key_exchange("X25519Kyber768Draft00"));
+        // Names outside the IANA registry are not guessed at.
+        assert!(!detector.is_pqc_key_exchange("ntru"));
 
         assert!(!detector.is_pqc_key_exchange("x25519"));
         assert!(!detector.is_pqc_key_exchange("secp256r1"));
@@ -1138,9 +840,11 @@ mod tests {
     fn test_pqc_signature_detection() {
         let detector = PqcDetector::new();
 
-        assert!(detector.is_pqc_signature_algorithm("dilithium3"));
-        assert!(detector.is_pqc_signature_algorithm("FALCON512"));
-        assert!(detector.is_pqc_signature_algorithm("sphincsplus"));
+        assert!(detector.is_pqc_signature_algorithm("id-ml-dsa-65"));
+        assert!(detector.is_pqc_signature_algorithm("mldsa87"));
+        assert!(detector.is_pqc_signature_algorithm("id-MLDSA65-ECDSA-P256-SHA512"));
+        // ML-KEM identifies a KEM key, never a signature.
+        assert!(!detector.is_pqc_signature_algorithm("id-alg-ml-kem-768"));
 
         assert!(!detector.is_pqc_signature_algorithm("sha256WithRSAEncryption"));
         assert!(!detector.is_pqc_signature_algorithm("ecdsa-with-SHA256"));
@@ -1154,7 +858,7 @@ mod tests {
             target: "example.com:443".to_string(),
             tls_version: "1.3".to_string(),
             cipher_suite: "TLS_AES_256_GCM_SHA384".to_string(),
-            key_exchange: vec!["x25519".to_string(), "kyber1024".to_string()],
+            key_exchange: vec!["X25519MLKEM768".to_string()],
             pqc_extensions: PqcExtensions::default(),
             certificate_info: None,
             raw_server_hello: Vec::new(),
@@ -1175,6 +879,9 @@ mod tests {
         let analysis = detector.analyze_pqc_support(&handshake_result);
         assert!(analysis.pqc_detected);
         assert!(analysis.hybrid_detected);
-        assert!(analysis.classical_fallback_available);
+        assert_eq!(
+            analysis.pqc_key_exchange,
+            vec!["X25519MLKEM768".to_string()]
+        );
     }
 }

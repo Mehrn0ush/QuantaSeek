@@ -175,8 +175,7 @@ impl OutputFormatter {
             "tls_features": result.tls_features,
             "certificate_visible": result.certificate_visible,
             "handshake_complete": result.handshake_complete,
-            "pqc_detected": !result.analysis.pqc_signature_algorithms.is_empty() ||
-                           result.key_exchange.iter().any(|kex| kex.contains("ML-KEM") || kex.contains("Kyber")),
+            "pqc_detected": result.analysis.pqc_detected,
             "fallback": result.fallback,
             "analysis": self.format_analysis_json(result),
             "handshake_duration_ms": result.handshake_duration_ms,
@@ -986,7 +985,7 @@ mod tests {
             target: "example.com:443".to_string(),
             tls_version: "1.3".to_string(),
             cipher_suite: "TLS_AES_256_GCM_SHA384".to_string(),
-            key_exchange: vec!["x25519".to_string(), "kyber1024".to_string()],
+            key_exchange: vec!["X25519MLKEM768".to_string()],
             pqc_extensions: PqcExtensions::default(),
             certificate_info: Some(CertificateInfo {
                 subject: "CN=example.com".to_string(),

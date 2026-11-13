@@ -41,176 +41,68 @@ impl DetailedPqcAnalyzer {
         analyzer
     }
 
-    /// Initialize KEM security properties
+    /// Initialize KEM security properties.
+    ///
+    /// NIST security categories are from FIPS 203 §8 (ML-KEM-512: 1,
+    /// ML-KEM-768: 3, ML-KEM-1024: 5). A hybrid group is rated by its PQ
+    /// component. Classical groups are labelled "Classical" (no PQ category).
     fn initialize_kem_properties(&mut self) {
-        // ML-KEM family
-        self.kem_properties.insert(
-            "ML-KEM-1024".to_string(),
-            KemProperties {
-                security_bits: 256,
-                nist_level: "Level 3".to_string(),
-                priority: 1,
-            },
-        );
-        self.kem_properties.insert(
-            "ML-KEM-768".to_string(),
-            KemProperties {
-                security_bits: 192,
-                nist_level: "Level 2".to_string(),
-                priority: 2,
-            },
-        );
-        self.kem_properties.insert(
-            "ML-KEM-512".to_string(),
-            KemProperties {
-                security_bits: 128,
-                nist_level: "Level 1".to_string(),
-                priority: 3,
-            },
-        );
-
-        // Kyber family
-        self.kem_properties.insert(
-            "Kyber1024".to_string(),
-            KemProperties {
-                security_bits: 256,
-                nist_level: "Level 3".to_string(),
-                priority: 4,
-            },
-        );
-        self.kem_properties.insert(
-            "Kyber768".to_string(),
-            KemProperties {
-                security_bits: 192,
-                nist_level: "Level 2".to_string(),
-                priority: 5,
-            },
-        );
-        self.kem_properties.insert(
-            "Kyber512".to_string(),
-            KemProperties {
-                security_bits: 128,
-                nist_level: "Level 1".to_string(),
-                priority: 6,
-            },
-        );
-
-        // Classical algorithms
-        self.kem_properties.insert(
-            "X25519".to_string(),
-            KemProperties {
-                security_bits: 128,
-                nist_level: "Classical".to_string(),
-                priority: 7,
-            },
-        );
-        self.kem_properties.insert(
-            "P-256".to_string(),
-            KemProperties {
-                security_bits: 128,
-                nist_level: "Classical".to_string(),
-                priority: 8,
-            },
-        );
-        self.kem_properties.insert(
-            "P-384".to_string(),
-            KemProperties {
-                security_bits: 192,
-                nist_level: "Classical".to_string(),
-                priority: 9,
-            },
-        );
+        let entries: &[(&str, u32, &str, u32)] = &[
+            ("MLKEM1024", 256, "Category 5", 1),
+            ("SecP384r1MLKEM1024", 256, "Category 5", 2),
+            ("MLKEM1024X448", 256, "Category 5", 3),
+            ("X25519MLKEM768", 192, "Category 3", 4),
+            ("SecP256r1MLKEM768", 192, "Category 3", 5),
+            ("MLKEM768", 192, "Category 3", 6),
+            ("MLKEM512", 128, "Category 1", 7),
+            (
+                "X25519Kyber768Draft00",
+                192,
+                "Category 3 (pre-standard Kyber)",
+                8,
+            ),
+            (
+                "SecP256r1Kyber768Draft00",
+                192,
+                "Category 3 (pre-standard Kyber)",
+                9,
+            ),
+            ("x25519", 128, "Classical", 10),
+            ("secp256r1", 128, "Classical", 11),
+            ("secp384r1", 192, "Classical", 12),
+            ("secp521r1", 256, "Classical", 13),
+            ("X25519", 128, "Classical", 10),
+            ("P-256", 128, "Classical", 11),
+            ("P-384", 192, "Classical", 12),
+            // Bare KEM names used by callers and tests
+            ("ML-KEM-1024", 256, "Category 5", 1),
+            ("ML-KEM-768", 192, "Category 3", 6),
+            ("ML-KEM-512", 128, "Category 1", 7),
+        ];
+        for &(name, security_bits, nist_level, priority) in entries {
+            self.kem_properties.insert(
+                name.to_string(),
+                KemProperties {
+                    security_bits,
+                    nist_level: nist_level.to_string(),
+                    priority,
+                },
+            );
+        }
     }
 
-    /// Initialize extension type names
+    /// Extension names come from the IANA registry in [`crate::constants`].
     fn initialize_extension_names(&mut self) {
-        // TLS 1.3 extensions
-        self.extension_names
-            .insert(0x0000, "server_name".to_string());
-        self.extension_names
-            .insert(0x0001, "max_fragment_length".to_string());
-        self.extension_names
-            .insert(0x0002, "client_certificate_url".to_string());
-        self.extension_names
-            .insert(0x0003, "trusted_ca_keys".to_string());
-        self.extension_names
-            .insert(0x0004, "truncated_hmac".to_string());
-        self.extension_names
-            .insert(0x0005, "status_request".to_string());
-        self.extension_names
-            .insert(0x0006, "user_mapping".to_string());
-        self.extension_names
-            .insert(0x0007, "client_authz".to_string());
-        self.extension_names
-            .insert(0x0008, "server_authz".to_string());
-        self.extension_names.insert(0x0009, "cert_type".to_string());
-        self.extension_names
-            .insert(0x000a, "supported_groups".to_string());
-        self.extension_names
-            .insert(0x000b, "ec_point_formats".to_string());
-        self.extension_names.insert(0x000c, "srp".to_string());
-        self.extension_names
-            .insert(0x000d, "signature_algorithms".to_string());
-        self.extension_names.insert(0x000e, "use_srtp".to_string());
-        self.extension_names.insert(0x000f, "heartbeat".to_string());
-        self.extension_names
-            .insert(0x0010, "application_layer_protocol_negotiation".to_string());
-        self.extension_names
-            .insert(0x0011, "status_request_v2".to_string());
-        self.extension_names
-            .insert(0x0012, "signed_certificate_timestamp".to_string());
-        self.extension_names
-            .insert(0x0013, "client_certificate_type".to_string());
-        self.extension_names
-            .insert(0x0014, "server_certificate_type".to_string());
-        self.extension_names.insert(0x0015, "padding".to_string());
-        self.extension_names
-            .insert(0x0016, "encrypt_then_mac".to_string());
-        self.extension_names
-            .insert(0x0017, "extended_master_secret".to_string());
-        self.extension_names
-            .insert(0x0018, "session_ticket".to_string());
-        self.extension_names
-            .insert(0x0019, "renegotiation_info".to_string());
-        self.extension_names
-            .insert(0x001a, "post_handshake_auth".to_string());
-        self.extension_names
-            .insert(0x001b, "signature_algorithms_cert".to_string());
-        self.extension_names.insert(0x001c, "key_share".to_string());
-        self.extension_names
-            .insert(0x001d, "transparency_info".to_string());
-        self.extension_names
-            .insert(0x001e, "connection_id".to_string());
-        self.extension_names
-            .insert(0x001f, "connection_id_deprecated".to_string());
-        self.extension_names
-            .insert(0x0020, "external_id_hash".to_string());
-        self.extension_names
-            .insert(0x0021, "external_session_id".to_string());
-        self.extension_names
-            .insert(0x0022, "quic_transport_parameters".to_string());
-        self.extension_names
-            .insert(0x0023, "ticket_early_data_info".to_string());
-        self.extension_names.insert(0x0024, "cookie".to_string());
-        self.extension_names
-            .insert(0x0025, "psk_key_exchange_modes".to_string());
-        self.extension_names
-            .insert(0x0026, "early_data".to_string());
-        self.extension_names
-            .insert(0x0027, "certificate_authorities".to_string());
-        self.extension_names
-            .insert(0x0028, "oid_filters".to_string());
-        self.extension_names
-            .insert(0x0029, "post_handshake_auth".to_string());
-        self.extension_names
-            .insert(0x002a, "signature_algorithms_cert".to_string());
-        self.extension_names.insert(0x002b, "key_share".to_string());
-
-        // PQC-specific extensions (draft numbers)
-        self.extension_names.insert(0xfe00, "kem".to_string());
-        self.extension_names.insert(0xfe01, "kem_group".to_string());
-        self.extension_names
-            .insert(0xfe02, "pqc_signature_algorithms".to_string());
+        for ext in 0u16..=57 {
+            if let Some(name) = crate::constants::extension_name(ext) {
+                self.extension_names.insert(ext, name.to_string());
+            }
+        }
+        for ext in [65037u16, 65281] {
+            if let Some(name) = crate::constants::extension_name(ext) {
+                self.extension_names.insert(ext, name.to_string());
+            }
+        }
     }
 
     /// Analyze KEM negotiation from handshake data
@@ -318,19 +210,15 @@ impl DetailedPqcAnalyzer {
                 .unwrap_or(&format!("Unknown(0x{:04x})", ext_type))
                 .clone();
 
-            let pqc_related = matches!(
-                ext_type,
-                0xfe00..=0xfe02 // PQC-specific extensions
-            );
+            // TLS 1.3 has no PQC-specific extensions; PQC uses supported_groups/key_share.
+            let pqc_related = false;
 
             // Estimate data length if not provided
             let estimated_length = data_length.unwrap_or_else(|| {
                 match ext_type {
                     0x000a => 16, // supported_groups: typically 16 bytes
-                    0x001c => 32, // key_share: typically 32 bytes
+                    0x0033 => 32, // key_share: estimated
                     0x000d => 8,  // signature_algorithms: typically 8 bytes
-                    0xfe00 => 8,  // kem: typically 8 bytes
-                    0xfe01 => 8,  // kem_group: typically 8 bytes
                     _ => 0,
                 }
             });
@@ -355,19 +243,15 @@ impl DetailedPqcAnalyzer {
                 .unwrap_or(&format!("Unknown(0x{:04x})", ext_type))
                 .clone();
 
-            let pqc_related = matches!(
-                ext_type,
-                0xfe00..=0xfe02 // PQC-specific extensions
-            );
+            // TLS 1.3 has no PQC-specific extensions; PQC uses supported_groups/key_share.
+            let pqc_related = false;
 
             // Estimate data length if not provided
             let estimated_length = data_length.unwrap_or_else(|| {
                 match ext_type {
                     0x000a => 16, // supported_groups: typically 16 bytes
-                    0x001c => 32, // key_share: typically 32 bytes
+                    0x0033 => 32, // key_share: estimated
                     0x000d => 8,  // signature_algorithms: typically 8 bytes
-                    0xfe00 => 8,  // kem: typically 8 bytes
-                    0xfe01 => 8,  // kem_group: typically 8 bytes
                     _ => 0,
                 }
             });
@@ -522,10 +406,12 @@ impl DetailedPqcAnalyzer {
 
         // Determine NIST level based on effective bits
         let nist_level = match effective_bits {
-            0..128 => "Level 0".to_string(),
-            128..192 => "Level 1".to_string(),
-            192..256 => "Level 2".to_string(),
-            _ => "Level 3".to_string(),
+            // Bits-to-category mapping per NIST PQC security categories
+            // (1 ~ AES-128, 3 ~ AES-192, 5 ~ AES-256).
+            0..128 => "Below Category 1".to_string(),
+            128..192 => "Category 1".to_string(),
+            192..256 => "Category 3".to_string(),
+            _ => "Category 5".to_string(),
         };
 
         // Calculate score on 100-point scale using weighted formula
@@ -687,8 +573,8 @@ mod tests {
     #[test]
     fn test_extension_usage_analysis() {
         let analyzer = DetailedPqcAnalyzer::new();
-        let client_extensions = vec![(0x001c, Some(100)), (0x000d, Some(50))]; // key_share, signature_algorithms
-        let server_extensions = vec![(0x001c, Some(100))]; // key_share only
+        let client_extensions = vec![(0x0033, Some(100)), (0x000d, Some(50))]; // key_share, signature_algorithms
+        let server_extensions = vec![(0x0033, Some(100))]; // key_share only
         let pqc_extensions = vec!["kem".to_string(), "kem_group".to_string()];
 
         let usage = analyzer.analyze_extension_usage(

@@ -38,7 +38,7 @@ impl CertificateParser {
         // FIXED: Use to_string() method - same as used in oid_to_signature_algorithm_name
         // This is the proven method that works in other parts of the code
         // Always store the OID string, even if empty (for debugging purposes)
-        let signature_algorithm_oid = Some(sig_oid.to_string());
+        let signature_algorithm_oid = Some(sig_oid.to_id_string());
         let signature_algorithm = self.oid_to_signature_algorithm_name(sig_oid);
 
         // Extract validity dates
@@ -112,81 +112,43 @@ impl CertificateParser {
 
     fn extract_public_key_info(&self, subject_pki: &SubjectPublicKeyInfo) -> (String, Option<u32>) {
         let algorithm = self.oid_to_algorithm_name(&subject_pki.algorithm.algorithm);
-        let key_size = self.estimate_key_size(&algorithm, &subject_pki.subject_public_key.data);
-
-        // If key size extraction failed, try to estimate based on algorithm and data length
-        let key_size = key_size.or_else(|| {
-            match algorithm.as_str() {
-                "RSA" | "RSA-SHA256" | "RSA-SHA384" | "RSA-SHA512" => {
-                    // Estimate RSA key size from data length
-                    let data_len = subject_pki.subject_public_key.data.len();
-                    if data_len > 0 {
-                        // Rough estimate: RSA key size is typically data_len * 8 - some overhead
-                        let estimated_bits = (data_len * 8).saturating_sub(64);
-                        if (1024..=8192).contains(&estimated_bits) {
-                            Some(estimated_bits as u32)
-                        } else {
-                            // Fallback to common RSA key sizes
-                            Some(2048)
-                        }
-                    } else {
-                        Some(2048) // Default fallback
-                    }
-                }
-                "ECDSA" | "ECDSA P-256" | "ECDSA-SHA256" => Some(256),
-                "ECDSA P-384" | "ECDSA-SHA384" => Some(384),
-                "ECDSA P-521" | "ECDSA-SHA512" => Some(521),
-                _ => None,
-            }
-        });
-
+        let key_size = match algorithm.as_str() {
+            "RSA" => self
+                .extract_rsa_key_size(&subject_pki.subject_public_key.data)
+                .ok(),
+            // EC key size comes from the named-curve parameter, not the algorithm OID.
+            "ECDSA" => subject_pki
+                .algorithm
+                .parameters
+                .as_ref()
+                .and_then(|p| p.as_oid().ok())
+                .and_then(|curve| match curve.to_id_string().as_str() {
+                    "1.2.840.10045.3.1.7" => Some(256), // secp256r1, RFC 5480
+                    "1.3.132.0.34" => Some(384),        // secp384r1, RFC 5480
+                    "1.3.132.0.35" => Some(521),        // secp521r1, RFC 5480
+                    _ => None,
+                }),
+            "Ed25519" => Some(256),
+            "Ed448" => Some(456),
+            _ => None,
+        };
+        // Unknown sizes stay None rather than being defaulted.
         (algorithm, key_size)
     }
 
+    /// Name of a SubjectPublicKeyInfo algorithm OID.
     fn oid_to_algorithm_name(&self, oid: &Oid) -> String {
-        match oid.to_string().as_str() {
-            "1.2.840.113549.1.1.1" => "RSA".to_string(),
-            "1.2.840.10045.2.1" => "ECDSA".to_string(),
-            "1.2.840.10045.3.1.7" => "ECDSA P-256".to_string(),
-            "1.3.132.0.34" => "ECDSA P-384".to_string(),
-            "1.3.132.0.35" => "ECDSA P-521".to_string(),
-            "1.2.840.113549.1.1.11" => "RSA-SHA256".to_string(),
-            "1.2.840.113549.1.1.12" => "RSA-SHA384".to_string(),
-            "1.2.840.113549.1.1.13" => "RSA-SHA512".to_string(),
-            "1.2.840.10045.4.3.2" => "ECDSA-SHA256".to_string(),
-            "1.2.840.10045.4.3.3" => "ECDSA-SHA384".to_string(),
-            "1.2.840.10045.4.3.4" => "ECDSA-SHA512".to_string(),
-            // PQC OIDs (draft/experimental)
-            "1.3.6.1.4.1.2.267.1.6.5" => "Dilithium3".to_string(),
-            "1.3.6.1.4.1.2.267.1.6.7" => "Dilithium5".to_string(),
-            "1.3.6.1.4.1.2.267.1.5.3" => "Falcon-512".to_string(),
-            "1.3.6.1.4.1.2.267.1.5.4" => "Falcon-1024".to_string(),
-            "1.3.6.1.4.1.2.267.1.1.1" => "Kyber512".to_string(),
-            "1.3.6.1.4.1.2.267.1.1.2" => "Kyber768".to_string(),
-            "1.3.6.1.4.1.2.267.1.1.3" => "Kyber1024".to_string(),
-            "1.3.6.1.4.1.2.267.1.1.4" => "ML-KEM-512".to_string(),
-            "1.3.6.1.4.1.2.267.1.1.5" => "ML-KEM-768".to_string(),
-            "1.3.6.1.4.1.2.267.1.1.6" => "ML-KEM-1024".to_string(),
-            _ => format!("OID({})", oid),
+        let dotted = oid.to_id_string();
+        if let Some(pq) = crate::constants::pqc_oid(&dotted) {
+            return pq.name.to_string();
         }
-    }
-
-    fn estimate_key_size(&self, algorithm: &str, key_data: &[u8]) -> Option<u32> {
-        match algorithm {
-            "RSA" | "RSA-SHA256" | "RSA-SHA384" | "RSA-SHA512" => {
-                self.extract_rsa_key_size(key_data).ok()
-            }
-            "ECDSA" | "ECDSA P-256" | "ECDSA-SHA256" => Some(256),
-            "ECDSA P-384" | "ECDSA-SHA384" => Some(384),
-            "ECDSA P-521" | "ECDSA-SHA512" => Some(521),
-            "Dilithium3" => Some(1952),
-            "Dilithium5" => Some(2592),
-            "Falcon-512" => Some(896),
-            "Falcon-1024" => Some(1792),
-            "Kyber512" | "ML-KEM-512" => Some(512),
-            "Kyber768" | "ML-KEM-768" => Some(768),
-            "Kyber1024" | "ML-KEM-1024" => Some(1024),
-            _ => None,
+        match dotted.as_str() {
+            "1.2.840.113549.1.1.1" => "RSA".to_string(), // rsaEncryption, RFC 8017
+            "1.2.840.113549.1.1.10" => "RSA-PSS".to_string(), // id-RSASSA-PSS, RFC 4055
+            "1.2.840.10045.2.1" => "ECDSA".to_string(),  // id-ecPublicKey, RFC 5480
+            "1.3.101.112" => "Ed25519".to_string(),      // RFC 8410
+            "1.3.101.113" => "Ed448".to_string(),        // RFC 8410
+            _ => format!("OID({})", dotted),
         }
     }
 
@@ -270,147 +232,66 @@ impl CertificateParser {
         Ok(actual_bits as u32)
     }
 
+    /// DNS names from the subjectAltName extension (RFC 5280 §4.2.1.6).
     fn extract_san(&self, tbs_certificate: &TbsCertificate) -> Option<String> {
-        // Look for Subject Alternative Name extension
-        for extension in tbs_certificate.extensions() {
-            if extension.oid.to_string() == "2.5.29.17" {
-                // Subject Alternative Name OID
-                // Try to parse the SAN extension value
-                if let Ok(san_names) = self.parse_san_extension(extension.value) {
-                    return Some(san_names);
-                }
-            }
+        let san = tbs_certificate.subject_alternative_name().ok()??;
+        let mut dns_names: Vec<&str> = san
+            .value
+            .general_names
+            .iter()
+            .filter_map(|name| match name {
+                GeneralName::DNSName(dns) => Some(*dns),
+                _ => None,
+            })
+            .collect();
+        if dns_names.is_empty() {
+            return None;
         }
-
-        None
+        dns_names.sort_unstable();
+        dns_names.dedup();
+        Some(dns_names.join(", "))
     }
 
-    fn parse_san_extension(&self, san_data: &[u8]) -> Result<String> {
-        // Simplified SAN parser that looks for DNS name patterns
-        // This is a more robust approach than complex ASN.1 parsing
-
-        let mut dns_names = Vec::new();
-        let mut pos = 0;
-
-        while pos < san_data.len() {
-            // Look for DNS name tag (0x82) - ContextSpecific(2)
-            if pos + 2 < san_data.len() && san_data[pos] == 0x82 {
-                let length = san_data[pos + 1] as usize;
-                if pos + 2 + length <= san_data.len() {
-                    let dns_data = &san_data[pos + 2..pos + 2 + length];
-                    if let Ok(dns_str) = String::from_utf8(dns_data.to_vec()) {
-                        // Validate it looks like a DNS name
-                        if dns_str.contains('.') && !dns_str.contains('\0') && dns_str.len() > 1 {
-                            dns_names.push(dns_str);
-                        }
-                    }
-                }
-                pos += 2 + length;
-            } else {
-                pos += 1;
-            }
-        }
-
-        // Also try to find DNS names in the raw data as a fallback
-        if dns_names.is_empty() {
-            let data_str = String::from_utf8_lossy(san_data);
-            // Look for patterns that might be DNS names
-            for word in data_str.split(|c: char| !c.is_alphanumeric() && c != '.' && c != '-') {
-                if word.contains('.')
-                    && word.len() > 3
-                    && !word.starts_with('.')
-                    && !word.ends_with('.')
-                {
-                    // Basic DNS name validation
-                    if word
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '.' || c == '-')
-                    {
-                        dns_names.push(word.to_string());
-                    }
-                }
-            }
-        }
-
-        if dns_names.is_empty() {
-            // Final fallback: indicate presence but parsing failed
-            Ok("DNS names present (parsing failed)".to_string())
-        } else {
-            // Remove duplicates and join
-            dns_names.sort();
-            dns_names.dedup();
-            Ok(dns_names.join(", "))
-        }
-    }
-
+    /// Name of a certificate signatureAlgorithm OID.
     fn oid_to_signature_algorithm_name(&self, oid: &Oid) -> String {
-        match oid.to_string().as_str() {
-            // RSA signature algorithms
+        let dotted = oid.to_id_string();
+        if let Some(pq) = crate::constants::pqc_oid(&dotted) {
+            return pq.name.to_string();
+        }
+        match dotted.as_str() {
+            // RFC 8017 / RFC 4055
+            "1.2.840.113549.1.1.5" => "RSA-SHA1".to_string(),
+            "1.2.840.113549.1.1.10" => "RSA-PSS".to_string(),
             "1.2.840.113549.1.1.11" => "RSA-SHA256".to_string(),
             "1.2.840.113549.1.1.12" => "RSA-SHA384".to_string(),
             "1.2.840.113549.1.1.13" => "RSA-SHA512".to_string(),
-            "1.2.840.113549.1.1.5" => "RSA-SHA1".to_string(),
-
-            // ECDSA signature algorithms
+            // RFC 5758 / RFC 3279
+            "1.2.840.10045.4.1" => "ECDSA-SHA1".to_string(),
             "1.2.840.10045.4.3.2" => "ECDSA-SHA256".to_string(),
             "1.2.840.10045.4.3.3" => "ECDSA-SHA384".to_string(),
             "1.2.840.10045.4.3.4" => "ECDSA-SHA512".to_string(),
-            "1.2.840.10045.4.1" => "ECDSA-SHA1".to_string(),
-
-            // EdDSA signature algorithms
+            // RFC 8410
             "1.3.101.112" => "Ed25519".to_string(),
             "1.3.101.113" => "Ed448".to_string(),
-
-            // PQC signature algorithms (draft/experimental)
-            "1.3.6.1.4.1.2.267.1.6.5" => "Dilithium3".to_string(),
-            "1.3.6.1.4.1.2.267.1.6.7" => "Dilithium5".to_string(),
-            "1.3.6.1.4.1.2.267.1.5.3" => "Falcon-512".to_string(),
-            "1.3.6.1.4.1.2.267.1.5.4" => "Falcon-1024".to_string(),
-
-            _ => format!("OID({})", oid),
+            _ => format!("OID({})", dotted),
         }
     }
 
+    /// Whether the certificate's key algorithm and the issuer's signature
+    /// algorithm are a recognised pairing. Mixed issuer/subject families
+    /// (e.g. an ECDSA key signed with RSA) are normal and count as consistent.
     pub fn validate_algorithm_consistency(
         public_key_algorithm: &str,
         signature_algorithm: &str,
     ) -> bool {
-        // Algorithm consistency check: Validates if the certificate's public key algorithm
-        // and signature algorithm (used by issuer to sign this certificate) form a valid combination.
-        //
-        // IMPORTANT: signature_algorithm refers to the algorithm used by the ISSUER to sign
-        // this certificate, NOT the algorithm of the certificate's own public key.
-        // It is NORMAL for an ECDSA public key to be signed with RSA (or vice versa).
-        // Example: Google certificates often have ECDSA public keys signed with RSA-SHA256.
-        //
-        // This function returns true if the combination is valid/normal, false if inconsistent.
-
-        let pub_key_lower = public_key_algorithm.to_lowercase();
-        let sig_lower = signature_algorithm.to_lowercase();
-
-        // Check for actual inconsistencies (same certificate, incompatible algorithms)
-        match (pub_key_lower.as_str(), sig_lower.as_str()) {
-            // Valid combinations for same certificate
-            ("rsa", sig) if sig.contains("rsa") => true,
-            ("ecdsa", sig) if sig.contains("ecdsa") => true,
-            ("ed25519", "ed25519") => true,
-            ("ed448", "ed448") => true,
-            // PQC signature algorithms can be used with any public key
-            (_, sig)
-                if sig.contains("dilithium")
-                    || sig.contains("falcon")
-                    || sig.contains("sphincs") =>
-            {
-                true
-            }
-            // Mixed issuer-subject algorithms are normal, not inconsistent
-            // ECDSA leaf certificate signed by RSA issuer (common in practice)
-            ("ecdsa", sig) if sig.contains("rsa") => true,
-            // RSA leaf certificate signed by ECDSA issuer (less common but valid)
-            ("rsa", sig) if sig.contains("ecdsa") => true,
-            // Invalid combinations (should not occur in valid certificates)
-            _ => false,
-        }
+        let known_key = matches!(
+            public_key_algorithm,
+            "RSA" | "RSA-PSS" | "ECDSA" | "Ed25519" | "Ed448"
+        ) || crate::constants::PQC_OIDS
+            .iter()
+            .any(|o| o.name == public_key_algorithm);
+        let known_sig = !signature_algorithm.starts_with("OID(");
+        known_key && known_sig
     }
 
     /// Validate if a hostname matches the certificate's SAN or subject
@@ -449,41 +330,15 @@ impl CertificateParser {
         Ok(None)
     }
 
-    /// Extract PQC signature algorithms from CT log data
+    /// PQC signature algorithms of a certificate obtained from CT logs,
+    /// identified by OID only.
     pub fn extract_pqc_signatures_from_ct(cert_info: &CertificateInfo) -> Vec<String> {
-        let mut pqc_signatures = Vec::new();
-
-        // Analyze certificate for PQC signature indicators
-        let cert_str = format!(
-            "{} {} {}",
-            cert_info.public_key_algorithm, cert_info.signature_algorithm, cert_info.subject
-        )
-        .to_lowercase();
-
-        // Look for PQC signature algorithm indicators
-        if cert_str.contains("dilithium") {
-            if cert_str.contains("2") {
-                pqc_signatures.push("Dilithium2".to_string());
-            } else if cert_str.contains("3") {
-                pqc_signatures.push("Dilithium3".to_string());
-            } else if cert_str.contains("5") {
-                pqc_signatures.push("Dilithium5".to_string());
-            }
-        }
-
-        if cert_str.contains("falcon") {
-            if cert_str.contains("512") {
-                pqc_signatures.push("Falcon512".to_string());
-            } else if cert_str.contains("1024") {
-                pqc_signatures.push("Falcon1024".to_string());
-            }
-        }
-
-        if cert_str.contains("sphincs") {
-            pqc_signatures.push("SPHINCS+-SHA256-128f-simple".to_string());
-        }
-
-        pqc_signatures
+        cert_info
+            .signature_algorithm_oid
+            .as_deref()
+            .filter(|oid| crate::constants::is_pqc_oid(oid))
+            .map(|oid| vec![format!("pqc_sig_oid:{}", oid)])
+            .unwrap_or_default()
     }
 
     /// Check if hostname matches any DNS name in SAN
