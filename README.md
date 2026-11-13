@@ -54,6 +54,9 @@ cargo build --release
 | `--probe` | Also probe groups, preference, HelloRetryRequest, downgrade and ClientHello-size tolerance (off by default) |
 | `--probe-budget <N>` | Maximum probes per target (default 40) |
 | `--probe-spacing <MS>` | Minimum milliseconds between probes, at least 100 (default 100, plus up to 50% jitter) |
+| `--policy <id>` | Apply a policy pack to the findings (available: `nist-ir-8547`) |
+| `--fail-on <severity>` | Exit 1 if a finding reaches this severity: info, low, medium, high (default) or critical; `never` disables |
+| `--ca-file <PEM>` | Trust these CA certificates instead of the webpki-roots bundle (internal PKIs) |
 | `--connect-timeout <SECS>` | TCP connect timeout (default 5) |
 | `--handshake-timeout <MS>` | TLS read/write timeout (default 5000) |
 | `--print-schema` | Print the output's JSON Schema and exit |
@@ -80,6 +83,45 @@ Probing stops early after 3 consecutive connection failures. Results are in
 ```bash
 ./target/release/quantaseek -q --probe example.com | jq '.probe.accepted_groups, .probe.downgrade.behaviour'
 ```
+
+### Findings and policy packs
+
+Every result includes an `assessment`: findings from the rule catalogue
+([`rules/rules.toml`](rules/rules.toml)), applied to the observed fields.
+Each finding has:
+- a stable id (for example `QS-KEX-001`), title and severity
+- the report fields it was derived from (`evidence`, provenance `derived`)
+- remediation and primary-source references with verbatim quotes
+
+A rule that cannot run for a scan (for example a probe rule without
+`--probe`) is listed in `not_evaluated` with the reason, and never passes
+silently. `score` is derived from the findings only (method in the output).
+
+| Rule | Finding |
+|---|---|
+| QS-TLS-001 | TLS 1.2 negotiated |
+| QS-KEX-001 | No post-quantum key exchange negotiated |
+| QS-KEX-002 | Classical key share accepted while a PQ group was offered (`--probe`) |
+| QS-KEX-004 | Server accepts no post-quantum group (`--probe`) |
+| QS-KEX-005 | Large ClientHello not tolerated (`--probe`) |
+| QS-KEX-010 | Key exchange does not use ML-KEM-1024 |
+| QS-CERT-001 | Certificate chain uses quantum-vulnerable signatures |
+| QS-CERT-002 | Server authenticates with a quantum-vulnerable signature |
+| QS-CERT-003 | HashML-DSA used in a certificate (RFC 9881 §8.3) |
+| QS-CERT-004 | Certificate chain failed validation |
+
+Without `--policy`, every rule applies at its default severity. With
+`--policy nist-ir-8547`, only the rules that NIST IR 8547 (final, October
+2026) covers apply, at its severities, each carrying the quoted clause and
+deadline. No CNSA 2.0, BSI or ANSSI pack ships yet; see Limitations.
+`scripts/check-rule-metadata` fails if any rule or policy entry lacks a
+primary-source quote.
+
+Exit status:
+- 0: no finding reached `--fail-on`
+- 1: a finding reached `--fail-on`
+- 2: a target produced no observation (DNS, TCP or timeout failure, or a
+  scanner error). Command-line usage errors also exit 2.
 
 ### Profiles
 
@@ -140,7 +182,7 @@ each entry cites its source (IANA TLS registries, NIST CSOR, RFC 10024, RFC
 
 ## Limitations
 
-These describe the tool after milestone M3, as of 2026-11-13.
+These describe the tool after milestone M4, as of 2026-11-13.
 
 **What the handshake can test**
 - The full handshake (rustls) can only offer the groups in the profile
@@ -174,12 +216,19 @@ These describe the tool after milestone M3, as of 2026-11-13.
   fixture exists for them, because no maintained implementation produces
   RFC 10073 composites.
 
+**Findings and policies**
+- Only the NIST IR 8547 policy pack exists. A CNSA 2.0 pack needs the NSA's
+  published text, which could not be retrieved for quoting.
+  QS-KEX-010 (not ML-KEM-1024) is reported at `info` severity without a
+  policy. BSI TR-02102-1 and ANSSI packs have not been written.
+- Findings cover what QuantaSeek observes. A clean result says nothing about
+  algorithms used elsewhere (other ports, protocols, or stored data).
+
 **Operation**
 - Targets are scanned one after another. There is no concurrency and no
   target-file or CIDR input yet (ROADMAP M5). Within one target, probes are
   spaced and capped (see `--probe`).
-- The exit code is 0 whenever output was produced, even if a target failed.
-  Check `outcome.status`.
+- Exit status 2 does not distinguish a scan error from a command-line error.
 
 ## Responsible use
 

@@ -4,8 +4,9 @@
 on branch `phase1-foundation`. Updated the same day after milestone M1
 (Truthful output) on branch `m1-truthful-output` (§1.6, §5 M1), and after
 milestone M2 (Deterministic testbed) on branch `m2-testbed` (§1.7, §5 M2),
-and after the first part of M3 (Detection engine) on branch `m3-detection`
-(§1.8, §5 M3).*
+after the first part of M3 (Detection engine) on branch `m3-detection`
+(§1.8, §5 M3), and after M4 (Findings and policy packs) on branch
+`m4-findings` (§1.9, §5 M4).*
 
 This document has nine parts:
 
@@ -247,6 +248,28 @@ cannot offer. That is impossible by construction. They were restated as
 `*_found_by_probe` (the prober reports the group as accepted). The other two
 (`m3_slhdsa_signed_chain_is_reported`, `m3_invalid_certificates_are_reported`)
 were met as written and folded into their live tests.
+
+### 1.9 Milestone M4 changes (branch `m4-findings`)
+
+| Commit | Change |
+|---|---|
+| a5ac6e5 | Findings model, ten-rule catalogue (`rules/rules.toml`), NIST IR 8547 pack, derived score, `--policy`, `--fail-on`, exit codes 0/1/2, `scripts/check-rule-metadata` |
+| 9a005e8 | Rules applied to testbed fixtures (positive and negative); NIST pack clause test; `--ca-file` |
+| (this commit) | README and ROADMAP for M4 |
+
+**Primary sources read for M4:**
+- NIST IR 8547 final (October 2026), full text via pdftotext from the
+  nvlpubs.nist.gov PDF.
+- RFC 8446 §4.1.1 and §4.2.8, RFC 5280 §6.1.3, RFC 9881 §8.3, and RFC 10024
+  §1 and §4.1.
+
+All 16 quotes in the catalogue and the pack were checked verbatim, after
+whitespace and line-break-hyphen normalisation, against those texts.
+
+**CNSA 2.0 primary text not obtained.** media.defense.gov returned 403 to
+curl and to WebFetch, and I did not try to get around the block. Per the
+§2 rule, no CNSA pack ships. The draft rule it needs (QS-KEX-010, not
+ML-KEM-1024) exists at `info` severity.
 
 ---
 
@@ -518,7 +541,7 @@ Original acceptance (kept for reference):
 - QUIC testbed server (quic-go or ngtcp2): QUIC group reported with `transport == "quic"`, no TCP connection made (verified by test harness)
 - total probes per target ≤ documented budget (e.g. ≤ 40) and default spacing ≥ 100 ms, asserted by the harness
 
-### M4: Findings model and policy packs (about 3–4 weeks)
+### M4: Findings model and policy packs — done 2026-11-13 except the CNSA, BSI and ANSSI packs (branch `m4-findings`)
 
 Scope:
 - **The `Finding` type.** Fields:
@@ -546,7 +569,35 @@ Scope:
 - `--policy <pack>` CLI. Exit codes for CI gating: 0 = pass, 1 = findings at or
   above a threshold, 2 = scan error.
 
-Acceptance:
+Status (§1.9):
+- Finding type, catalogue, NIST IR 8547 pack, derived score, CLI and exit
+  codes: done.
+- Not built from the plan's examples:
+  - "Only pre-standard Kyber accepted": the prober cannot generate Kyber
+    draft keys, so the rule could never fire.
+  - The CNSA 2.0 pack: no primary text.
+  - BSI and ANSSI packs: not started; the primary texts still need to be
+    read.
+- Added beyond the plan: QS-TLS-001, QS-KEX-004, QS-CERT-002, and
+  `--ca-file`.
+
+Acceptance results [ran 2026-11-13]:
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `cargo test rules::` | 11 passed (positive and negative per rule on synthetic reports). The testbed fixtures run under `cargo test --features testbed --test testbed` (`rules_on_testbed_fixtures`). QS-CERT-003 has no buildable positive fixture |
+| 2 | `--policy cnsa-2.0` on the X25519MLKEM768 server exits 1 with QS-KEX-010 citing CNSA | **Blocked**: no CNSA pack (primary text not obtained). Without a policy, QS-KEX-010 is reported at `info` on that server |
+| 3 | `scripts/check-rule-metadata` fails if a reference is missing | Passes on the real metadata; exits 101 with one quote blanked |
+| 4 | Score property: no findings gives 100, a critical caps it | `one_critical_finding_caps_the_score_whatever_else_is_present`: all 1024 combinations of up to two findings per severity |
+
+Exit codes [ran against the testbed]:
+- X25519MLKEM768 server with `--ca-file`: exit 0 (medium and info findings
+  only).
+- Classical server with `--policy nist-ir-8547`: exit 1 (QS-KEX-001 high,
+  clause "4.1.2, Table 4").
+- Refused connection: exit 2.
+
+Original acceptance (kept for reference):
 - `cargo test rules::` runs every rule against its positive and negative testbed fixture
 - `quantaseek --policy cnsa-2.0 localhost:<x25519mlkem768> ; test $? -eq 1` and the JSON includes `QS-KEX-010` with a CNSA citation
 - `scripts/check-rule-metadata` fails if any rule or policy entry lacks a primary-source reference
@@ -778,7 +829,10 @@ plan) rather than relicensing the scanner.
      (`--probe`), with a capped probe budget and at least 100 ms between
      probes by default. The default scan stays one handshake.
 8. **D8 Policy-pack priority.** Which jurisdictions first? Suggested: NIST IR
-   8547 (open) and CNSA 2.0, then BSI and ANSSI.
+   8547 (open) and CNSA 2.0, then BSI and ANSSI. *NIST shipped in M4.* For
+   CNSA 2.0, the owner needs to supply the NSA PDFs: the CNSA 2.0
+   Algorithms advisory and the CNSA 2.0 FAQ. media.defense.gov blocks
+   automated retrieval.
 9. **D9 Live-scan policy for research and marketing.** *Interim for M3:*
    local testbed only, no public hosts. Which public hosts may be
    scanned, at what rate, and whether results are ever published.
@@ -792,7 +846,7 @@ plan) rather than relicensing the scanner.
 
 ## 9. Appendix
 
-### 9.1 Verification log (Phase 0, Phase 1, M1, M2 and M3)
+### 9.1 Verification log (Phase 0 to M4)
 
 - **Builds and tools.**
   - Builds: `cargo build`, `cargo test`, `cargo clippy --all-targets`,
@@ -838,6 +892,13 @@ plan) rather than relicensing the scanner.
   - Ran: `confirm.sh` (67 checks); `tests/testbed.rs` (19 passed);
     `tests/probe.rs` (5); the M3 CLI acceptance commands against the
     testbed; `server_reply` fuzzing (300 s).
+
+- **M4:**
+  - Read: NIST IR 8547 final (pdftotext in a container), RFC 8446, RFC 5280.
+  - Quote check: 16 of 16 verbatim.
+  - Ran: `cargo test rules::` (11), `rule_metadata` (2), and the testbed
+    suite (21 passed, including findings and policy).
+  - CLI exit codes against the testbed.
 
 ### 9.2 Primary sources consulted (2026-11-13)
 
