@@ -95,8 +95,20 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --all-targets --locked --no-run
+      # A new network namespace has only a loopback interface, and it starts
+      # down: bring it up so the in-process test servers on 127.0.0.1/::1
+      # work. There is still no route off the machine (checked below).
       - name: cargo test with no network
-        run: sudo -E env "PATH=$PATH" "HOME=$HOME" unshare --net -- cargo test --all-targets --locked --offline
+        run: |
+          sudo -E env "PATH=$PATH" "HOME=$HOME" unshare --net -- sh -c '
+            set -e
+            ip link set lo up
+            ip -brief addr
+            if getent hosts example.com >/dev/null 2>&1; then
+              echo "DNS resolved inside the namespace: not isolated" >&2; exit 1
+            fi
+            echo "no DNS and no external interface, as intended"
+            cargo test --all-targets --locked --offline'
 
   # Docker testbed: ground truth via openssl s_client, then QuantaSeek against it.
   testbed:
