@@ -9,7 +9,8 @@
 //!
 //! Tests named `m3_*` are `#[ignore]`d: they state what the M3 detection
 //! engine must report for a server the scanner cannot see today. Their
-//! companions without the prefix assert today's truthful output.
+//! companions without the prefix assert today's truthful output. When M3
+//! delivers a capability, its `m3_*` test is folded into the companion.
 //!
 //! If the testbed is not running, each test prints a message and returns,
 //! unless QUANTASEEK_TESTBED_REQUIRED=1 (set in CI), which makes it fail.
@@ -189,7 +190,7 @@ fn assert_derived(r: &ScanReport, kex: &str, chain: &str, sig: &str) {
 
 fn assert_server_result(r: &ScanReport, code: &str) -> String {
     assert!(!r.completed());
-    assert!(r.tls.is_none() && r.certificate_chain.is_empty() && r.pqc.is_none());
+    assert!(r.tls.is_none());
     let e = r.outcome.error.as_ref().expect("error");
     assert_eq!(
         (e.code.as_str(), e.category),
@@ -199,8 +200,30 @@ fn assert_server_result(r: &ScanReport, code: &str) -> String {
     e.message.clone()
 }
 
+/// The handshake was refused before any certificate was presented.
+fn assert_no_certificates(r: &ScanReport) {
+    assert!(r.certificate_chain.is_empty() && r.pqc.is_none());
+    assert_eq!(r.certificate_validation.status, "not_reached");
+}
+
+/// The chain was presented and rejected; it is still reported as sent.
+fn assert_rejected_chain_reported(r: &ScanReport, server: &Server) {
+    assert_server_result(r, "certificate_rejected");
+    assert_eq!(r.certificate_validation.status, "invalid");
+    assert!(r.certificate_validation.reason.is_some());
+    let sha: Vec<String> = r
+        .certificate_chain
+        .iter()
+        .map(|c| c.sha256.clone())
+        .collect();
+    assert_eq!(sha, served_chain_sha256(server), "{}", server.name);
+    let p = r.pqc.as_ref().expect("pqc derived from the chain");
+    assert_eq!(p.key_exchange.value, "unknown");
+}
+
 fn assert_rejected_no_shared_group(r: &ScanReport) {
     assert_server_result(r, "handshake_rejected");
+    assert_no_certificates(r);
     let e = r.outcome.error.as_ref().unwrap();
     assert_eq!(e.alert.as_deref(), Some("HandshakeFailure"));
     assert_eq!(e.interpretation.as_ref().unwrap().provenance, "inferred");
@@ -478,28 +501,26 @@ async fn mldsa65_intermediate_server() {
 }
 
 #[tokio::test]
-async fn slhdsa_signed_chain_is_rejected_today() {
+async fn slhdsa_signed_chain_is_rejected_but_reported() {
     // rustls-webpki 0.103 cannot verify SLH-DSA signatures; OpenSSL verifies
     // this chain (confirm.sh), so the rejection is a scanner limitation.
+    // The chain is still reported as presented.
     let Some(r) = scan(&CERT_SLHDSA_CA, HandshakeProfile::Default).await else {
         return;
     };
-    assert_server_result(&r, "certificate_rejected");
-}
-
-#[tokio::test]
-#[ignore = "M3: chain must be reported even when webpki cannot verify it (SLH-DSA)"]
-async fn m3_slhdsa_signed_chain_is_reported() {
-    let Some(r) = scan(&CERT_SLHDSA_CA, HandshakeProfile::Default).await else {
-        return;
-    };
-    let leaf = r.certificate_chain.first().expect("chain reported");
+    assert_rejected_chain_reported(&r, &CERT_SLHDSA_CA);
+    let leaf = &r.certificate_chain[0];
     assert_eq!(leaf.signature.name, "id-slh-dsa-sha2-128s");
     assert_eq!(leaf.signature.family, "slh_dsa");
+    assert_eq!(leaf.public_key.name, "ECDSA");
+    assert_eq!(
+        r.pqc.as_ref().unwrap().certificate_chain.value,
+        "post_quantum"
+    );
 }
 
 #[tokio::test]
-async fn invalid_certificates_are_rejected_today() {
+async fn invalid_certificates_are_rejected_but_reported() {
     for (server, reason) in [
         (&CERT_EXPIRED, "certificate expired"),
         (&CERT_MISMATCH, "not valid for name"),
@@ -508,24 +529,9 @@ async fn invalid_certificates_are_rejected_today() {
         let Some(r) = scan(server, HandshakeProfile::Default).await else {
             return;
         };
-        let message = assert_server_result(&r, "certificate_rejected");
-        assert!(message.contains(reason), "{}: {message}", server.name);
-    }
-}
-
-#[tokio::test]
-#[ignore = "M3: chains that fail validation must still be reported, marked not validated"]
-async fn m3_invalid_certificates_are_reported() {
-    for server in [&CERT_EXPIRED, &CERT_MISMATCH, &CERT_SELF_SIGNED] {
-        let Some(r) = scan(server, HandshakeProfile::Default).await else {
-            return;
-        };
-        let sha: Vec<String> = r
-            .certificate_chain
-            .iter()
-            .map(|c| c.sha256.clone())
-            .collect();
-        assert_eq!(sha, served_chain_sha256(server), "{}", server.name);
+        assert_rejected_chain_reported(&r, server);
+        let why = r.certificate_validation.reason.as_deref().unwrap();
+        assert!(why.contains(reason), "{}: {why}", server.name);
     }
 }
 

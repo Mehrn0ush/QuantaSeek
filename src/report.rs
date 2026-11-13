@@ -12,7 +12,7 @@
 //! in for a measurement.
 
 use crate::constants::{self, GroupKind, OidKind, Status};
-use crate::handshake::Observation;
+use crate::handshake::{Observation, PartialObservation};
 use crate::types::{HandshakeProfile, ScanError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -56,10 +56,12 @@ pub struct ScanReport {
     pub outcome: Outcome,
     /// Present when the handshake completed.
     pub tls: Option<TlsInfo>,
-    /// Certificates as sent by the server, leaf first. Empty unless the
-    /// handshake completed (a chain that failed validation is not reported).
+    /// Certificates as sent by the server, leaf first. Reported whenever the
+    /// server presented them, including when validation failed; see
+    /// `certificate_validation`.
     pub certificate_chain: Vec<CertificateReport>,
-    /// Present when the handshake completed.
+    pub certificate_validation: CertificateValidation,
+    /// Present when the handshake completed or a certificate chain was seen.
     pub pqc: Option<PqcSummary>,
     /// Present only when redirect following was requested.
     pub http_redirect: Option<HttpRedirectInfo>,
@@ -106,10 +108,23 @@ pub struct ProfileInfo {
 pub struct Outcome {
     /// "completed" when the handshake finished, otherwise "failed".
     pub status: String,
-    /// Trust store the chain was validated against: "webpki-roots" or "custom".
-    pub trust_store: String,
     /// Why the scan did not complete. Absent when status is "completed".
     pub error: Option<ScanError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CertificateValidation {
+    /// "valid" (rustls/webpki accepted the chain for `target.server_name`),
+    /// "invalid" (it rejected it; see `reason`), or "not_reached" (the
+    /// handshake failed before the server presented certificates).
+    pub status: String,
+    /// Trust store used: "webpki-roots" or "custom".
+    pub trust_store: String,
+    /// rustls/webpki rejection reason when status is "invalid". Note that
+    /// webpki 0.103 cannot verify SLH-DSA, composite ML-DSA or Ed448
+    /// signatures, so such chains are "invalid" here even if correctly signed.
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -375,8 +390,8 @@ fn is_pq_family(family: &str) -> bool {
 }
 
 /// Derived PQC summary. Each value states the rule it follows.
-fn pqc_summary(tls: &TlsInfo, chain: &[CertificateReport]) -> PqcSummary {
-    let key_exchange = match &tls.key_exchange {
+fn pqc_summary(tls: Option<&TlsInfo>, chain: &[CertificateReport]) -> PqcSummary {
+    let key_exchange = match tls.and_then(|t| t.key_exchange.as_ref()) {
         Some(g) if g.kind == "hybrid" || g.kind == "pure_pq" || g.kind == "classical" => {
             Derived::new(
                 &g.kind,
@@ -393,6 +408,7 @@ fn pqc_summary(tls: &TlsInfo, chain: &[CertificateReport]) -> PqcSummary {
                 g.code
             ),
         ),
+        None if tls.is_none() => Derived::new("unknown", "the handshake did not complete"),
         None => Derived::new("unknown", "the TLS stack reported no negotiated group"),
     };
 
@@ -423,7 +439,7 @@ fn pqc_summary(tls: &TlsInfo, chain: &[CertificateReport]) -> PqcSummary {
         )
     };
 
-    let handshake_signature = match &tls.server_signature_scheme {
+    let handshake_signature = match tls.and_then(|t| t.server_signature_scheme.as_ref()) {
         Some(s) => match s.post_quantum {
             Some(true) => Derived::new(
                 "post_quantum",
@@ -441,6 +457,7 @@ fn pqc_summary(tls: &TlsInfo, chain: &[CertificateReport]) -> PqcSummary {
                 ),
             ),
         },
+        None if tls.is_none() => Derived::new("unknown", "the handshake did not complete"),
         None => Derived::new("unknown", "no server signature scheme was captured"),
     };
 
@@ -469,6 +486,7 @@ impl ScanReport {
     pub fn build(
         ctx: ReportContext,
         observation: Option<&Observation>,
+        partial: Option<&PartialObservation>,
         error: Option<ScanError>,
         http_redirect: Option<HttpRedirectInfo>,
     ) -> Self {
@@ -492,9 +510,12 @@ impl ScanReport {
             server_signature_scheme: o.server_signature_scheme.map(signature_scheme_report),
             handshake_ms: o.duration.as_millis() as u64,
         });
-        let certificate_chain: Vec<CertificateReport> = observation
-            .map(|o| {
-                o.peer_chain
+        let presented = observation
+            .map(|o| &o.peer_chain)
+            .or(partial.map(|p| &p.peer_chain));
+        let certificate_chain: Vec<CertificateReport> = presented
+            .map(|chain| {
+                chain
                     .iter()
                     .enumerate()
                     .filter_map(|(i, der)| match certificate_report(i, der.as_ref()) {
@@ -507,7 +528,34 @@ impl ScanReport {
                     .collect()
             })
             .unwrap_or_default();
-        let pqc = tls.as_ref().map(|t| pqc_summary(t, &certificate_chain));
+        let pqc = (tls.is_some() || !certificate_chain.is_empty())
+            .then(|| pqc_summary(tls.as_ref(), &certificate_chain));
+        let trust_store = if ctx.custom_trust_store {
+            "custom"
+        } else {
+            "webpki-roots"
+        }
+        .to_string();
+        let certificate_rejected = error
+            .as_ref()
+            .is_some_and(|e| e.code == "certificate_rejected");
+        let certificate_validation = match (observation.is_some(), certificate_rejected) {
+            (true, _) => CertificateValidation {
+                status: "valid".to_string(),
+                trust_store,
+                reason: None,
+            },
+            (false, true) => CertificateValidation {
+                status: "invalid".to_string(),
+                trust_store,
+                reason: error.as_ref().map(|e| e.message.clone()),
+            },
+            (false, false) => CertificateValidation {
+                status: "not_reached".to_string(),
+                trust_store,
+                reason: None,
+            },
+        };
         let offered_tls_versions = if ctx.profile.tls13_only() {
             vec!["1.3".to_string()]
         } else {
@@ -544,22 +592,19 @@ impl ScanReport {
                     "failed"
                 }
                 .to_string(),
-                trust_store: if ctx.custom_trust_store {
-                    "custom"
-                } else {
-                    "webpki-roots"
-                }
-                .to_string(),
                 error,
             },
             tls,
             certificate_chain,
+            certificate_validation,
             pqc,
             http_redirect,
             not_implemented: NOT_IMPLEMENTED.iter().map(|s| s.to_string()).collect(),
             evidence: Evidence {
                 server_hellos_hex: observation
-                    .map(|o| o.server_hellos.iter().map(|m| hex(m)).collect())
+                    .map(|o| &o.server_hellos)
+                    .or(partial.map(|p| &p.server_hellos))
+                    .map(|hellos| hellos.iter().map(|m| hex(m)).collect())
                     .unwrap_or_default(),
             },
         }

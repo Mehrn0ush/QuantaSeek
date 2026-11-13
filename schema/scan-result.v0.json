@@ -91,6 +91,31 @@
       ],
       "type": "object"
     },
+    "CertificateValidation": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "description": "rustls/webpki rejection reason when status is \"invalid\". Note that\nwebpki 0.103 cannot verify SLH-DSA, composite ML-DSA or Ed448\nsignatures, so such chains are \"invalid\" here even if correctly signed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "\"valid\" (rustls/webpki accepted the chain for `target.server_name`),\n\"invalid\" (it rejected it; see `reason`), or \"not_reached\" (the\nhandshake failed before the server presented certificates).",
+          "type": "string"
+        },
+        "trust_store": {
+          "description": "Trust store used: \"webpki-roots\" or \"custom\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "trust_store"
+      ],
+      "type": "object"
+    },
     "CodeName": {
       "additionalProperties": false,
       "properties": {
@@ -301,15 +326,10 @@
         "status": {
           "description": "\"completed\" when the handshake finished, otherwise \"failed\".",
           "type": "string"
-        },
-        "trust_store": {
-          "description": "Trust store the chain was validated against: \"webpki-roots\" or \"custom\".",
-          "type": "string"
         }
       },
       "required": [
-        "status",
-        "trust_store"
+        "status"
       ],
       "type": "object"
     },
@@ -557,11 +577,14 @@
   "additionalProperties": false,
   "properties": {
     "certificate_chain": {
-      "description": "Certificates as sent by the server, leaf first. Empty unless the\nhandshake completed (a chain that failed validation is not reported).",
+      "description": "Certificates as sent by the server, leaf first. Reported whenever the\nserver presented them, including when validation failed; see\n`certificate_validation`.",
       "items": {
         "$ref": "#/$defs/CertificateReport"
       },
       "type": "array"
+    },
+    "certificate_validation": {
+      "$ref": "#/$defs/CertificateValidation"
     },
     "duration_ms": {
       "description": "Wall-clock time for this target, all connections included.",
@@ -602,7 +625,7 @@
           "type": "null"
         }
       ],
-      "description": "Present when the handshake completed."
+      "description": "Present when the handshake completed or a certificate chain was seen."
     },
     "profile": {
       "$ref": "#/$defs/ProfileInfo"
@@ -642,6 +665,7 @@
     "duration_ms",
     "outcome",
     "certificate_chain",
+    "certificate_validation",
     "not_implemented",
     "evidence"
   ],

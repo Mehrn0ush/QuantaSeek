@@ -51,11 +51,14 @@ pub struct Observation {
     pub duration: Duration,
 }
 
-/// Verifier that delegates to WebPKI and records the server's signature scheme.
+/// Verifier that delegates to WebPKI and records what the server presented:
+/// the certificates (before validation, so they are kept even if validation
+/// fails) and the handshake signature scheme.
 #[derive(Debug)]
 struct CapturingVerifier {
     inner: Arc<dyn ServerCertVerifier>,
     scheme: Arc<Mutex<Option<SignatureScheme>>>,
+    chain: Arc<Mutex<Vec<CertificateDer<'static>>>>,
 }
 
 impl CapturingVerifier {
@@ -75,6 +78,12 @@ impl ServerCertVerifier for CapturingVerifier {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
+        if let Ok(mut slot) = self.chain.lock() {
+            *slot = std::iter::once(end_entity)
+                .chain(intermediates)
+                .map(|c| c.clone().into_owned())
+                .collect();
+        }
         self.inner
             .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
     }
@@ -105,6 +114,32 @@ impl ServerCertVerifier for CapturingVerifier {
 }
 
 type CapturedScheme = Arc<Mutex<Option<SignatureScheme>>>;
+type CapturedChain = Arc<Mutex<Vec<CertificateDer<'static>>>>;
+
+/// What was observed before a handshake failed.
+#[derive(Debug, Default, Clone)]
+pub struct PartialObservation {
+    /// Certificates the server presented, captured before validation.
+    pub peer_chain: Vec<CertificateDer<'static>>,
+    /// Plaintext ServerHello / HelloRetryRequest messages received.
+    pub server_hellos: Vec<Vec<u8>>,
+}
+
+/// A failed handshake: the error and what had been observed by then.
+#[derive(Debug)]
+pub struct HandshakeFailure {
+    pub error: anyhow::Error,
+    pub partial: PartialObservation,
+}
+
+impl From<anyhow::Error> for HandshakeFailure {
+    fn from(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            partial: PartialObservation::default(),
+        }
+    }
+}
 
 pub struct HandshakeEngine {
     profile: HandshakeProfile,
@@ -128,7 +163,7 @@ impl HandshakeEngine {
     }
 
     /// The ClientConfig for this profile, plus the slot the verifier writes into.
-    fn client_config(&self) -> Result<(Arc<ClientConfig>, CapturedScheme)> {
+    fn client_config(&self) -> Result<(Arc<ClientConfig>, CapturedScheme, CapturedChain)> {
         use rustls::crypto::aws_lc_rs::default_provider;
         let provider = Arc::new(rustls::crypto::CryptoProvider {
             kx_groups: self.profile.kx_groups(),
@@ -147,9 +182,11 @@ impl HandshakeEngine {
         .build()
         .map_err(|e| anyhow::anyhow!("failed to build certificate verifier: {}", e))?;
         let scheme: CapturedScheme = Arc::new(Mutex::new(None));
+        let chain: CapturedChain = Arc::new(Mutex::new(Vec::new()));
         let verifier = Arc::new(CapturingVerifier {
             inner: webpki,
             scheme: scheme.clone(),
+            chain: chain.clone(),
         });
 
         let mut config = ClientConfig::builder_with_provider(provider)
@@ -158,7 +195,7 @@ impl HandshakeEngine {
             .with_root_certificates((*roots).clone())
             .with_no_client_auth();
         config.dangerous().set_certificate_verifier(verifier);
-        Ok((Arc::new(config), scheme))
+        Ok((Arc::new(config), scheme, chain))
     }
 
     /// Complete one handshake over `stream`, sending `server_name` as SNI and
@@ -167,19 +204,45 @@ impl HandshakeEngine {
         &self,
         stream: TcpStream,
         server_name: &str,
-    ) -> Result<Observation> {
-        let (config, scheme) = self.client_config()?;
-        let name = ServerName::try_from(server_name.to_string())
-            .map_err(|_| anyhow::anyhow!("invalid server name '{}'", server_name))?;
-        let std_stream = stream.into_std()?;
+    ) -> Result<Observation, Box<HandshakeFailure>> {
+        let (config, scheme, chain) = self.client_config().map_err(|e| Box::new(e.into()))?;
+        let name = ServerName::try_from(server_name.to_string()).map_err(|_| {
+            Box::new(HandshakeFailure::from(anyhow::anyhow!(
+                "invalid server name '{}'",
+                server_name
+            )))
+        })?;
+        let std_stream = stream
+            .into_std()
+            .map_err(|e| Box::new(HandshakeFailure::from(anyhow::Error::new(e))))?;
         let timeout = Duration::from_millis(self.config.timeout_ms);
         let start = Instant::now();
+        let received: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let (client, records) =
-            tokio::task::spawn_blocking(move || drive(config, name, std_stream, timeout)).await??;
+        let sink = received.clone();
+        let outcome =
+            tokio::task::spawn_blocking(move || drive(config, name, std_stream, timeout, &sink))
+                .await
+                .map_err(anyhow::Error::new)
+                .and_then(|r| r);
+
+        let records = received.lock().map(|r| r.clone()).unwrap_or_default();
+        let server_hellos = server_hello_messages(&records);
+        let peer_chain_seen = chain.lock().map(|c| c.clone()).unwrap_or_default();
+        let client = match outcome {
+            Ok(client) => client,
+            Err(error) => {
+                return Err(Box::new(HandshakeFailure {
+                    error,
+                    partial: PartialObservation {
+                        peer_chain: peer_chain_seen,
+                        server_hellos,
+                    },
+                }))
+            }
+        };
 
         let captured = scheme.lock().ok().and_then(|s| *s);
-        let server_hellos = server_hello_messages(&records);
         Ok(Observation {
             tls_version: match client.protocol_version() {
                 Some(rustls::ProtocolVersion::TLSv1_3) => Some("1.3".to_string()),
@@ -206,19 +269,19 @@ impl HandshakeEngine {
     }
 }
 
-/// Blocking handshake loop. Returns the connection and every byte received.
+/// Blocking handshake loop. Every byte received is appended to `received`.
 fn drive(
     config: Arc<ClientConfig>,
     name: ServerName<'static>,
     mut stream: std::net::TcpStream,
     timeout: Duration,
-) -> Result<(ClientConnection, Vec<u8>)> {
+    received: &Mutex<Vec<u8>>,
+) -> Result<ClientConnection> {
     let mut client = ClientConnection::new(config, name)?;
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
 
-    let mut received = Vec::new();
     let mut buf = [0u8; 16384];
     while client.is_handshaking() {
         while client.wants_write() {
@@ -240,7 +303,9 @@ fn drive(
                 // Keep the io::Error as the source so timeouts stay classifiable.
                 Err(e) => return Err(anyhow::Error::new(e).context("failed to read from stream")),
             };
-            received.extend_from_slice(&buf[..n]);
+            if let Ok(mut r) = received.lock() {
+                r.extend_from_slice(&buf[..n]);
+            }
             // read_tls consumes at most 4096 bytes per call (rustls
             // deframer READ_SIZE); feed the whole read, processing as we go.
             let mut pending = &buf[..n];
@@ -260,7 +325,7 @@ fn drive(
         }
     }
     let _ = stream.flush();
-    Ok((client, received))
+    Ok(client)
 }
 
 /// ServerHello (type 2) handshake messages in plaintext handshake records.

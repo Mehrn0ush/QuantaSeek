@@ -1,5 +1,10 @@
 {
   "certificate_chain": [],
+  "certificate_validation": {
+    "reason": null,
+    "status": "not_reached",
+    "trust_store": "custom"
+  },
   "duration_ms": "<volatile>",
   "evidence": {
     "server_hellos_hex": []
@@ -27,8 +32,7 @@
       "interpretation": null,
       "message": "<volatile>"
     },
-    "status": "failed",
-    "trust_store": "custom"
+    "status": "failed"
   },
   "pqc": null,
   "profile": {

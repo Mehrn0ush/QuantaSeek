@@ -26,6 +26,11 @@
       "subject": "CN=localhost"
     }
   ],
+  "certificate_validation": {
+    "reason": null,
+    "status": "valid",
+    "trust_store": "custom"
+  },
   "duration_ms": "<volatile>",
   "evidence": {
     "server_hellos_hex": [
@@ -48,8 +53,7 @@
   ],
   "outcome": {
     "error": null,
-    "status": "completed",
-    "trust_store": "custom"
+    "status": "completed"
   },
   "pqc": {
     "certificate_chain": {

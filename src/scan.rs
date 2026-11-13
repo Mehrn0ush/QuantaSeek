@@ -284,7 +284,7 @@ pub async fn scan_target(
         Ok(t) => t,
         Err(e) => {
             let error = ScanError::from_code_with_message(ErrorCode::InvalidTarget, e, None);
-            return ScanReport::build(ctx(None, None, None, None), None, Some(error), None);
+            return ScanReport::build(ctx(None, None, None, None), None, None, Some(error), None);
         }
     };
     let host = parsed.host.as_str();
@@ -335,13 +335,15 @@ pub async fn scan_target(
                     ctx(Some(host), Some(port), Some(server_name), address),
                     Some(&observation),
                     None,
+                    None,
                     redirect,
                 )
             }
-            Err(e) => ScanReport::build(
+            Err(failure) => ScanReport::build(
                 ctx(Some(host), Some(port), Some(server_name), address),
                 None,
-                Some(classify_handshake_error(&e, profile, port)),
+                Some(&failure.partial),
+                Some(classify_handshake_error(&failure.error, profile, port)),
                 None,
             ),
         };
@@ -352,6 +354,7 @@ pub async fn scan_target(
         .unwrap_or_else(|| ScanError::from_code(ErrorCode::Unknown, None));
     ScanReport::build(
         ctx(Some(host), None, Some(server_name), None),
+        None,
         None,
         Some(error),
         None,
