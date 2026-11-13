@@ -171,6 +171,14 @@ impl HandshakeEngine {
         Self { profile, config }
     }
 
+    /// Trust anchors: the configured store, or the webpki-roots bundle.
+    fn root_store(&self) -> RootCertStore {
+        match &self.config.trust_anchors {
+            Some(store) => (**store).clone(),
+            None => webpki_root_store(),
+        }
+    }
+
     /// Disable performance optimizations
     pub fn without_optimizations(mut self) -> Self {
         self.config.enable_optimizations = false;
@@ -632,6 +640,14 @@ impl HandshakeEngine {
 
             // Check if handshake is complete
             handshake_complete = !client.is_handshaking();
+        }
+
+        // rustls considers the handshake done once it has queued the client
+        // Finished; send it, or the server never completes the handshake.
+        while client.wants_write() {
+            if client.write_tls(&mut stream)? == 0 {
+                break;
+            }
         }
 
         // Extract handshake messages from all captured records
@@ -1102,7 +1118,7 @@ impl HandshakeEngine {
         let _ = default_provider().install_default();
 
         // In rustls 0.23, RootCertStore can be created from webpki_roots directly
-        let root_store = crate::handshake::webpki_root_store();
+        let root_store = self.root_store();
 
         // FIXED: Create shared mutex to capture TLS 1.3 CertificateVerify signature scheme
         let captured_scheme: Arc<Mutex<Option<SignatureScheme>>> = Arc::new(Mutex::new(None));
@@ -1427,7 +1443,7 @@ impl HandshakeEngine {
         let start_time = Instant::now();
 
         // Create TLS 1.2 configuration
-        let root_store = crate::handshake::webpki_root_store();
+        let root_store = self.root_store();
 
         // PATH A: Use TLS 1.3 + 1.2 instead of only TLS 1.2 for better compatibility
         let mut config = ClientConfig::builder()
@@ -1589,7 +1605,7 @@ impl HandshakeEngine {
         use tokio_rustls::TlsConnector;
 
         // Create TLS configuration supporting both TLS 1.3 and 1.2
-        let root_store = crate::handshake::webpki_root_store();
+        let root_store = self.root_store();
 
         // PATH A: Use TLS 1.3 + 1.2 instead of only TLS 1.2 for better compatibility
         let mut config = ClientConfig::builder()

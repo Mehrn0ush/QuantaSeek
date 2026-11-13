@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Handshake configuration for timeout and retry settings
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct HandshakeConfig {
+    /// Trust anchors for chain validation. `None` uses the webpki-roots bundle.
+    pub trust_anchors: Option<std::sync::Arc<rustls::RootCertStore>>,
     /// Connection timeout in milliseconds
     pub timeout_ms: u64,
     /// Number of retry attempts for fallback
@@ -24,6 +26,7 @@ pub struct HandshakeConfig {
 impl Default for HandshakeConfig {
     fn default() -> Self {
         Self {
+            trust_anchors: None,
             timeout_ms: 5000,
             retry_attempts: 3,
             retry_backoff_multiplier: 2,

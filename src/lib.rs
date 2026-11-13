@@ -22,6 +22,7 @@ pub mod detector;
 pub mod handshake;
 pub mod http_redirect;
 pub mod output;
+pub mod scan;
 pub mod security_scoring;
 pub mod signature_detector;
 pub mod tls_parser;
