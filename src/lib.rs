@@ -1,34 +1,19 @@
-//! QuantaSeek - PQC-aware TLS Scanner
+//! QuantaSeek: a TLS scanner that reports negotiated key exchange and
+//! certificate algorithms, with a focus on post-quantum cryptography.
 //!
-//! A modular TLS scanner designed to detect and analyze Post-Quantum Cryptography (PQC)
-//! implementations in TLS 1.3 handshakes.
+//! The `quantaseek` binary (`src/main.rs`) is the main consumer of this
+//! library. The library API is not stable before 1.0.
 //!
-//! ## Features
+//! ## Modules
 //!
-//! - **PQC Detection**: Identifies hybrid key exchange and signature algorithms
-//! - **Modular Architecture**: Separate modules for handshake, parsing, detection, and output
-//! - **Multiple Profiles**: Support for different handshake profiles (Cloudflare, etc.)
-//! - **Comprehensive Analysis**: Detailed security level classification
-//! - **JSON Output**: Structured output for automated processing
+//! - [`handshake`]: TLS handshake engine (rustls) and raw record capture
+//! - [`tls_parser`]: ServerHello parsing (cipher suite, `key_share` group)
+//! - [`detector`]: classification of the negotiated algorithms
+//! - [`cert`]: X.509 certificate parsing (x509-parser)
+//! - [`constants`]: TLS codepoint and X.509 OID registry, with sources
+//! - [`output`]: JSON and text formatting
 //!
-//! ## Usage
-//!
-//! ```bash
-//! # Scan a server with PQC support
-//! RUST_LOG=debug ./target/release/pqcscan pki.goog
-//!
-//! # Scan with specific profile
-//! ./target/release/pqcscan --profile cloudflare pqc-demo.cryptoserver.dev
-//! ```
-//!
-//! ## Architecture
-//!
-//! - `handshake.rs`: TLS handshake engine and ClientHello construction
-//! - `parser.rs`: TLS message parsing and extraction
-//! - `detector.rs`: PQC detection and analysis logic
-//! - `output.rs`: Output formatting and presentation
-//! - `constants.rs`: TLS and PQC constants with IETF references
-//! - `cert.rs`: Certificate parsing and analysis
+//! See README.md for what the scanner can and cannot observe.
 
 pub mod cert;
 pub mod constants;

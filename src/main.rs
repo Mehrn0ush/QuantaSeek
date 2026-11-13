@@ -16,7 +16,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 
-/// Ports tried, in order, when a target does not name one.
+/// Ports probed for reachability, in order. Note: the handshake itself is
+/// currently always made to port 443 (see README, Limitations).
 const DEFAULT_PORTS: &[u16] = &[443, 8443, 4433, 9443, 4443];
 
 /// QuantaSeek: report the TLS key exchange and certificate algorithms an
@@ -40,10 +41,6 @@ struct Cli {
     /// Enable TLS 1.2 fallback for certificate analysis
     #[arg(long)]
     tls12: bool,
-
-    /// Comma-separated ports to try in order
-    #[arg(long, value_delimiter = ',', default_values_t = DEFAULT_PORTS.to_vec())]
-    ports: Vec<u16>,
 
     /// TCP connect timeout in seconds
     #[arg(long, default_value_t = 5, value_name = "SECS")]
@@ -116,7 +113,7 @@ async fn main() -> Result<()> {
         ..HandshakeConfig::default()
     };
     let _ = OPTIONS.set(ScanOptions {
-        ports: cli.ports.clone(),
+        ports: DEFAULT_PORTS.to_vec(),
         connect_timeout: Duration::from_secs(cli.connect_timeout),
         handshake,
     });
@@ -191,7 +188,7 @@ async fn scan_target(
         .await;
         match quic_outcome {
             Ok(Ok(quic_handshake_result)) => {
-                tracing::info!("  QUIC handshake successful!");
+                tracing::info!("  QUIC path finished (data comes from a TCP/TLS fallback; no QUIC handshake is performed)");
 
                 // Convert HandshakeResult -> ScanResult
                 let mut scan_result = ScanResult::new(target.to_string());
