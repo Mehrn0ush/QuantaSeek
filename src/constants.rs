@@ -1069,6 +1069,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_table_entry_cites_a_source_and_is_unique() {
+        for g in NAMED_GROUPS {
+            assert!(!g.reference.trim().is_empty(), "group {:#06x}", g.code);
+            assert!(!g.name.is_empty());
+            assert_eq!(
+                g.pq_kem.is_some(),
+                g.kind != GroupKind::Classical,
+                "{}",
+                g.name
+            );
+        }
+        for s in SIGNATURE_SCHEMES {
+            assert!(!s.reference.trim().is_empty(), "scheme {:#06x}", s.code);
+        }
+        for (i, a) in SIGNATURE_SCHEMES.iter().enumerate() {
+            assert!(
+                SIGNATURE_SCHEMES[i + 1..].iter().all(|b| b.code != a.code),
+                "{:#06x}",
+                a.code
+            );
+        }
+        for o in PQC_OIDS {
+            assert!(!o.reference.trim().is_empty(), "{}", o.oid);
+            assert!(
+                o.oid.split('.').all(|arc| arc.parse::<u64>().is_ok()),
+                "{}",
+                o.oid
+            );
+        }
+        for (i, a) in PQC_OIDS.iter().enumerate() {
+            assert!(
+                PQC_OIDS[i + 1..].iter().all(|b| b.name != a.name),
+                "{}",
+                a.name
+            );
+        }
+    }
+
+    #[test]
     fn hybrid_codepoints_match_rfc_10024() {
         assert_eq!(
             named_group(0x11eb).map(|g| g.name),

@@ -279,3 +279,29 @@ async fn large_server_flight_is_read_completely() {
     assert!(result.completed(), "error: {:?}", result.outcome.error);
     assert_eq!(result.certificate_chain[0].san_dns.len(), 401);
 }
+
+#[tokio::test]
+async fn scans_an_ipv6_literal_target() {
+    init();
+    let pki = TestPki::new("ipv6");
+    let Some(server) = support::spawn_on(
+        ServerSpec {
+            identity: pki.leaf("ipv6", &["::1"]),
+            groups: vec![X25519MLKEM768, X25519],
+            http_response: None,
+        },
+        "[::1]:0",
+    )
+    .await
+    else {
+        eprintln!("SKIPPED: ::1 is not available on this host");
+        return;
+    };
+    let target = format!("[::1]:{}", server.port());
+    let result =
+        quanta_seek::scan::scan_target(&scan_options(&pki), &target, &HandshakeProfile::Default)
+            .await;
+    assert!(result.completed(), "error: {:?}", result.outcome.error);
+    assert_eq!(result.target.host.as_deref(), Some("::1"));
+    assert_eq!(result.certificate_chain[0].san_ip, vec!["::1".to_string()]);
+}

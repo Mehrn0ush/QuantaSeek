@@ -116,6 +116,11 @@ impl TestServer {
 }
 
 pub async fn spawn(spec: ServerSpec) -> TestServer {
+    spawn_on(spec, "127.0.0.1:0").await.expect("bind 127.0.0.1")
+}
+
+/// Like [`spawn`], on a chosen local address. None if it cannot be bound.
+pub async fn spawn_on(spec: ServerSpec, bind: &str) -> Option<TestServer> {
     let provider = CryptoProvider {
         kx_groups: spec.groups,
         ..aws_lc_rs::default_provider()
@@ -127,7 +132,7 @@ pub async fn spawn(spec: ServerSpec) -> TestServer {
         .with_single_cert(spec.identity.chain, spec.identity.key)
         .unwrap();
     let acceptor = TlsAcceptor::from(Arc::new(config));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = TcpListener::bind(bind).await.ok()?;
     let addr = listener.local_addr().unwrap();
     let accepted = Arc::new(Mutex::new(Vec::new()));
     let connections = Arc::new(Mutex::new(0usize));
@@ -175,11 +180,11 @@ pub async fn spawn(spec: ServerSpec) -> TestServer {
         }
     });
 
-    TestServer {
+    Some(TestServer {
         addr,
         accepted,
         connections,
-    }
+    })
 }
 
 /// Install the process-wide rustls provider the scanner expects.

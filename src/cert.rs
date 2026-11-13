@@ -84,6 +84,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn classical_tables_cite_sources_and_do_not_overlap_pq_oids() {
+        for (oid, name, source) in CLASSICAL_KEYS.iter().chain(CLASSICAL_SIGNATURES) {
+            assert!(!name.is_empty() && !source.is_empty(), "{oid}");
+            assert!(crate::constants::pqc_oid(oid).is_none(), "{oid}");
+        }
+    }
+
+    #[test]
     fn names() {
         assert_eq!(
             signature_algorithm_name("1.2.840.113549.1.1.11"),
