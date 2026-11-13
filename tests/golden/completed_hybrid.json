@@ -1,0 +1,225 @@
+{
+  "assessment": {
+    "findings": [
+      {
+        "description": "At least one certificate the server sent is signed with RSA, ECDSA or EdDSA, which a cryptanalytically relevant quantum computer could forge.",
+        "evidence": [
+          {
+            "field": "certificate_chain[0].signature.name",
+            "value": "ECDSA-SHA256"
+          }
+        ],
+        "id": "QS-CERT-001",
+        "introduced_in": "0.1.0",
+        "policy": null,
+        "provenance": "derived",
+        "references": [
+          {
+            "quote": "NIST will instead deprecate all quantum-vulnerable digital signature algorithms after 2030 and disallow their use under NIST standards and guidelines after 2035.",
+            "section": "4.1.1, Table 2",
+            "source": "NIST IR 8547 (final, October 2026)",
+            "url": "https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf"
+          }
+        ],
+        "remediation": "Plan migration of the issuing CA hierarchy to ML-DSA (FIPS 204) or SLH-DSA (FIPS 205) certificates as client support allows.",
+        "severity": "medium",
+        "title": "Certificate chain uses quantum-vulnerable signatures"
+      },
+      {
+        "description": "The server's handshake signature (TLS 1.3 CertificateVerify, TLS 1.2 ServerKeyExchange) used a classical scheme, so its authentication relies on a quantum-vulnerable key.",
+        "evidence": [
+          {
+            "field": "tls.server_signature_scheme.name",
+            "value": "ecdsa_secp256r1_sha256"
+          }
+        ],
+        "id": "QS-CERT-002",
+        "introduced_in": "0.1.0",
+        "policy": null,
+        "provenance": "derived",
+        "references": [
+          {
+            "quote": "NIST will instead deprecate all quantum-vulnerable digital signature algorithms after 2030 and disallow their use under NIST standards and guidelines after 2035.",
+            "section": "4.1.1, Table 2",
+            "source": "NIST IR 8547 (final, October 2026)",
+            "url": "https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf"
+          }
+        ],
+        "remediation": "Deploy an ML-DSA certificate and key for clients that support it.",
+        "severity": "medium",
+        "title": "Server authenticates with a quantum-vulnerable signature"
+      },
+      {
+        "description": "The negotiated key exchange is not based on ML-KEM-1024 (security category 5). NIST recommends ML-KEM-768 by default; some policies (for example CNSA 2.0) require ML-KEM-1024.",
+        "evidence": [
+          {
+            "field": "tls.key_exchange.name",
+            "value": "X25519MLKEM768"
+          },
+          {
+            "field": "tls.key_exchange.pq_kem",
+            "value": "ML-KEM-768"
+          }
+        ],
+        "id": "QS-KEX-010",
+        "introduced_in": "0.1.0",
+        "policy": null,
+        "provenance": "derived",
+        "references": [
+          {
+            "quote": "NIST recommends using ML-KEM-768 as the default parameter set, as it provides a large security margin at a reasonable performance cost. In cases where this is impractical or when higher security is required, other parameter sets may be used.",
+            "section": "4.1.2, Table 5",
+            "source": "NIST IR 8547 (final, October 2026)",
+            "url": "https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf"
+          }
+        ],
+        "remediation": "Where the applicable policy requires ML-KEM-1024, enable SecP384r1MLKEM1024 or MLKEM1024 and prefer it.",
+        "severity": "info",
+        "title": "Key exchange does not use ML-KEM-1024"
+      }
+    ],
+    "not_evaluated": [
+      {
+        "id": "QS-KEX-002",
+        "reason": "--probe was not requested"
+      },
+      {
+        "id": "QS-KEX-004",
+        "reason": "--probe was not requested"
+      },
+      {
+        "id": "QS-KEX-005",
+        "reason": "--probe was not requested"
+      }
+    ],
+    "policy": null,
+    "score": {
+      "method": "100 minus 0 per info, 2 per low, 10 per medium, 25 per high and 50 per critical finding, floored at 0; capped at 40 if any finding is critical. Rules listed in not_evaluated do not affect the score.",
+      "provenance": "derived",
+      "value": 80
+    }
+  },
+  "certificate_chain": [
+    {
+      "issuer": "CN=schema Test CA",
+      "not_after": "<volatile>",
+      "not_before": "<volatile>",
+      "position": 0,
+      "public_key": {
+        "family": "classical",
+        "name": "ECDSA",
+        "oid": "1.2.840.10045.2.1",
+        "size_bits": 256
+      },
+      "san_dns": [
+        "localhost"
+      ],
+      "san_ip": [],
+      "serial_hex": "<volatile>",
+      "sha256": "<volatile>",
+      "signature": {
+        "family": "classical",
+        "name": "ECDSA-SHA256",
+        "oid": "1.2.840.10045.4.3.2",
+        "size_bits": null
+      },
+      "subject": "CN=localhost"
+    }
+  ],
+  "certificate_validation": {
+    "reason": null,
+    "status": "valid",
+    "trust_store": "custom"
+  },
+  "duration_ms": "<volatile>",
+  "evidence": {
+    "server_hellos_hex": [
+      "<volatile>"
+    ]
+  },
+  "http_redirect": null,
+  "not_implemented": [
+    "quic",
+    "alpn",
+    "ocsp_stapling",
+    "session_resumption",
+    "early_data",
+    "certificate_transparency",
+    "revocation"
+  ],
+  "not_requested": [
+    "probe",
+    "http_redirect"
+  ],
+  "outcome": {
+    "error": null,
+    "status": "completed"
+  },
+  "pqc": {
+    "certificate_chain": {
+      "basis": "0 of 1 certificate signature algorithms are ML-DSA, SLH-DSA or composite ML-DSA OIDs",
+      "provenance": "derived",
+      "value": "classical"
+    },
+    "handshake_signature": {
+      "basis": "server signature scheme ecdsa_secp256r1_sha256 is classical",
+      "provenance": "derived",
+      "value": "classical"
+    },
+    "key_exchange": {
+      "basis": "negotiated group X25519MLKEM768 (0x11ec) is hybrid in the IANA TLS Supported Groups registry",
+      "provenance": "derived",
+      "value": "hybrid"
+    }
+  },
+  "probe": null,
+  "profile": {
+    "name": "default",
+    "offered_groups": [
+      "X25519MLKEM768",
+      "x25519",
+      "secp256r1",
+      "secp384r1"
+    ],
+    "offered_tls_versions": [
+      "1.3",
+      "1.2"
+    ]
+  },
+  "schema_version": "0",
+  "started_at": "<volatile>",
+  "target": {
+    "address": "<volatile>",
+    "host": "localhost",
+    "input": "<volatile>",
+    "port": "<volatile>",
+    "server_name": "localhost"
+  },
+  "tls": {
+    "cipher_suite": {
+      "code": 4866,
+      "name": "TLS_AES_256_GCM_SHA384"
+    },
+    "handshake_ms": "<volatile>",
+    "hello_retry_request": false,
+    "key_exchange": {
+      "code": 4588,
+      "kind": "hybrid",
+      "name": "X25519MLKEM768",
+      "pq_kem": "ML-KEM-768",
+      "reference": "RFC 10024",
+      "status": "standard"
+    },
+    "server_signature_scheme": {
+      "code": 1027,
+      "name": "ecdsa_secp256r1_sha256",
+      "post_quantum": false
+    },
+    "version": "1.3"
+  },
+  "tool": {
+    "name": "quantaseek",
+    "tls_stack": "rustls 0.23 / aws-lc-rs",
+    "version": "<volatile>"
+  }
+}

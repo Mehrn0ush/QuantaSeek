@@ -1,0 +1,114 @@
+# QuantaSeek testbed: TLS servers with known configurations.
+#
+#   docker compose -f testbed/compose.yml up -d --build --wait
+#   cargo test --features testbed --test testbed
+#
+# Every port is bound to 127.0.0.1. Each server writes its public CA and
+# served chain to testbed/run/<service>/ (git-ignored); private keys never
+# leave the container. Ground truth for each server: testbed/README.md.
+
+x-server: &server
+  build: .
+  image: quantaseek-testbed:local
+  healthcheck:
+    test: ["CMD", "nc", "-z", "127.0.0.1", "4443"]
+    interval: 1s
+    timeout: 2s
+    retries: 30
+
+services:
+  # --- key exchange (ECDSA P-256 chain) ---
+  x25519mlkem768:
+    <<: *server
+    environment: { GROUPS: X25519MLKEM768, TLS: tls13 }
+    ports: ["127.0.0.1:44301:4443"]
+    volumes: ["./run/x25519mlkem768:/out"]
+  secp256r1mlkem768:
+    <<: *server
+    environment: { GROUPS: SecP256r1MLKEM768, TLS: tls13 }
+    ports: ["127.0.0.1:44302:4443"]
+    volumes: ["./run/secp256r1mlkem768:/out"]
+  secp384r1mlkem1024:
+    <<: *server
+    environment: { GROUPS: SecP384r1MLKEM1024, TLS: tls13 }
+    ports: ["127.0.0.1:44303:4443"]
+    volumes: ["./run/secp384r1mlkem1024:/out"]
+  mlkem1024:
+    <<: *server
+    environment: { GROUPS: MLKEM1024, TLS: tls13 }
+    ports: ["127.0.0.1:44304:4443"]
+    volumes: ["./run/mlkem1024:/out"]
+  mlkem512:
+    <<: *server
+    environment: { GROUPS: MLKEM512, TLS: tls13 }
+    ports: ["127.0.0.1:44305:4443"]
+    volumes: ["./run/mlkem512:/out"]
+  classical:
+    <<: *server
+    environment: { GROUPS: "x25519:secp256r1" }
+    ports: ["127.0.0.1:44306:4443"]
+    volumes: ["./run/classical:/out"]
+  hrr-secp384r1:
+    # Accepts only secp384r1: a client whose first key share is another
+    # group gets a HelloRetryRequest.
+    <<: *server
+    environment: { GROUPS: secp384r1, TLS: tls13 }
+    ports: ["127.0.0.1:44307:4443"]
+    volumes: ["./run/hrr-secp384r1:/out"]
+  hybrid-and-classical:
+    # Both a PQ hybrid and a classical group: preference and downgrade probes.
+    <<: *server
+    environment: { GROUPS: "X25519MLKEM768:x25519", TLS: tls13 }
+    ports: ["127.0.0.1:44309:4443"]
+    volumes: ["./run/hybrid-and-classical:/out"]
+  tls12-classical:
+    <<: *server
+    environment: { GROUPS: "x25519:secp256r1", TLS: tls12 }
+    ports: ["127.0.0.1:44308:4443"]
+    volumes: ["./run/tls12-classical:/out"]
+
+  # --- certificates (key exchange X25519MLKEM768 or x25519) ---
+  cert-mldsa65:
+    <<: *server
+    environment: { GROUPS: "X25519MLKEM768:x25519", CERT: mldsa65, TLS: tls13 }
+    ports: ["127.0.0.1:44311:4443"]
+    volumes: ["./run/cert-mldsa65:/out"]
+  cert-mldsa65-intermediate:
+    <<: *server
+    environment: { GROUPS: "X25519MLKEM768:x25519", CERT: mldsa65-intermediate, TLS: tls13 }
+    ports: ["127.0.0.1:44312:4443"]
+    volumes: ["./run/cert-mldsa65-intermediate:/out"]
+  cert-slhdsa-ca:
+    <<: *server
+    environment: { GROUPS: "X25519MLKEM768:x25519", CERT: slhdsa-ca, TLS: tls13 }
+    ports: ["127.0.0.1:44313:4443"]
+    volumes: ["./run/cert-slhdsa-ca:/out"]
+  cert-expired:
+    <<: *server
+    environment: { GROUPS: "X25519MLKEM768:x25519", CERT: expired, TLS: tls13 }
+    ports: ["127.0.0.1:44314:4443"]
+    volumes: ["./run/cert-expired:/out"]
+  cert-mismatch:
+    <<: *server
+    environment: { GROUPS: "X25519MLKEM768:x25519", CERT: mismatch, TLS: tls13 }
+    ports: ["127.0.0.1:44315:4443"]
+    volumes: ["./run/cert-mismatch:/out"]
+  cert-self-signed:
+    <<: *server
+    environment: { GROUPS: "X25519MLKEM768:x25519", CERT: self-signed, TLS: tls13 }
+    ports: ["127.0.0.1:44316:4443"]
+    volumes: ["./run/cert-self-signed:/out"]
+
+  # --- ClientHello size: proxy closes on a first record > 1024 bytes ---
+  middlebox-1024:
+    <<: *server
+    environment: { SERVER: middlebox, GROUPS: "x25519", TLS: tls13 }
+    ports: ["127.0.0.1:44331:4443"]
+    volumes: ["./run/middlebox-1024:/out"]
+
+  # --- second implementation: Go crypto/tls ---
+  go-x25519mlkem768:
+    <<: *server
+    environment: { SERVER: go, GROUPS: X25519MLKEM768 }
+    ports: ["127.0.0.1:44321:4443"]
+    volumes: ["./run/go-x25519mlkem768:/out"]

@@ -1,47 +1,23 @@
-# Rust build output
+# Build output
 /target/
-/Cargo.lock
 
-# Binaries
-*.exe
-*.exe~
-*.dll
-*.dylib
-*.so
-*.rlib
-
-# Logs and runtime files
-*.log
-*.trace
+# Local scan output and scratch material (never commit scan results)
+/.archive/
+/scans/
 *.jsonl
-*.pcap
-*.pcapng
-*.csv
-*.out
+/summary-*.txt
+/pqc-summary-*.txt
+/success-summary-*.json
 
-# Debugging
-*.lldb
-*.gdb
-core
-*.profraw
-
-# IDEs and editors
-/.idea/
-/.vscode/
-/*.swp
-*.swo
-*.bak
-*.tmp
-
-# macOS
+# Editor / OS
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.rs.bk
 
-# GitHub Codespaces
-.devcontainer/
-
-# Project-specific artifacts
-/output/
-*.fingerprint.json
-*.certdump
-*.debugdump
-pqscan_cache/
+# Fuzzing artifacts
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/Cargo.lock

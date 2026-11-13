@@ -1,409 +1,295 @@
-# QuantaSeek PQC TLS Scanner 🔍
+# QuantaSeek
 
-[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![PQC](https://img.shields.io/badge/PQC-NIST%20Level%203-green.svg)](https://www.nist.gov/pqc)
-[![TLS](https://img.shields.io/badge/TLS-1.3%20Ready-brightgreen.svg)](https://tools.ietf.org/html/rfc8446)
+QuantaSeek is a command-line TLS scanner, written in Rust. It connects to an
+endpoint, completes a real TLS handshake with
+[rustls](https://github.com/rustls/rustls), and reports what was negotiated:
+TLS version, cipher suite, key-exchange group, the server's signature scheme,
+and the certificate chain. Its focus is post-quantum cryptography (PQC):
+whether an endpoint negotiates a hybrid or pure ML-KEM group, and whether its
+certificates and handshake signatures are ML-DSA, SLH-DSA or composite
+ML-DSA.
 
-**QuantaSeek** is a production-ready Post-Quantum Cryptography (PQC) aware TLS scanner that performs real TLS handshakes using `rustls`, analyzes TLS/PQC features, and produces structured, explainable security and performance reports.
+**Status: pre-1.0.** The output format is versioned (schema `0`) but can
+still change. Every value in the output is labelled as observed, derived or
+inferred, or is listed as not implemented (see [Output](#output)). What the
+scanner cannot see is listed under [Limitations](#limitations).
+[ROADMAP.md](ROADMAP.md) describes what comes next.
 
-## ✨ Key Highlights
+## Build
 
-- ✅ **Real TLS Handshakes**: Uses `rustls` for actual TLS 1.3/1.2 connections
-- ✅ **100% Accurate Certificate Analysis**: RFC 6125 compliant hostname validation, no mock data
-- ✅ **PQC Detection**: Supports ML-KEM (Kyber), Dilithium, Falcon, SPHINCS+
-- ✅ **QUIC Support**: Certificate extraction via TLS 1.2 fallback with robust retry logic
-- ✅ **Transparent Scoring**: Explainable security scores with detailed formulas
-- ✅ **Production Ready**: High accuracy for certificate validation, comprehensive error handling
-
-## 🌟 Key Features
-
-### 🔐 **PQC Algorithm Detection**
-- **KEMs:** ML-KEM-512 (L1), ML-KEM-768 (L3), ML-KEM-1024 (L5) — Kyber aliases supported
-- **Hybrid Mode:** Classical + PQC combinations (e.g., X25519 + ML-KEM-768)
-- **PQC Signatures (analysis):** Dilithium2/3/5, Falcon512/1024, SPHINCS+ (via certificate OID analysis)
-- **Raw TLS Parsing:** Extracts cipher suites and key exchange algorithms directly from ServerHello messages
-
-### 📊 **Transparent Security Scoring**
-- **Multi-Component Analysis:** TLS (30%), Certificate (25%), PQC (45%) for PQC-enabled handshakes
-- **Classical Mode:** TLS (50%), Certificate (50%) for classical-only connections
-- **Explainability:** Exact formulas and sub-scores included in JSON output
-- **NIST Mapping:** FIPS 203 levels (L1/L3/L5) reflected in scores
-- **Validation:** RFC 6125 hostname match and key/signature consistency checks
-
-### ⚡ **Performance & Reliability**
-- **Measured Handshakes:** Duration, overhead categories (PQC, certificate, network)
-- **Batch Scans:** Summary stats and per-target analysis
-- **TLS 1.2 Fallback:** Automatic certificate extraction for QUIC connections
-- **QUIC Support:** Robust TCP/TLS fallback with retry logic and multiple port attempts
-- **No Mock Data:** 100% real certificate data, validated and verified
-- **Error Handling:** Comprehensive error reporting with detailed diagnostics
-
-### 🎯 **Client Profiles**
-- **Classic**: Standard TLS 1.3 with classical algorithms only
-- **Fallback**: Cloudflare PQC-enabled server profile with fallback support
-- **Hybrid**: Hybrid PQC with classical fallback
-- **MaxPQC**: PQC-only configuration (experimental)
-
-### 📄 Features, Capabilities, and Limitations (full document)
-
-A complete description of all features, capabilities, and limitations of this Rust project is available in **[FEATURES_AND_LIMITATIONS.md](FEATURES_AND_LIMITATIONS.md)** (in English). It covers:
-
-- **Features**: Real TLS handshakes, PQC detection (KEM and certificate-based), client profiles and fallback, certificate analysis (RFC 6125), security scoring, QUIC support, HTTP redirect detection, performance timing, output formats, and CLI options.
-- **Capabilities**: Single and batch scans, dual stack (TCP + QUIC), fallback chains, structured output, and library API.
-- **Limitations**: QUIC certificate extraction (TLS 1.2 fallback only; QUIC-only servers may have no cert/key_exchange), TLS 1.3 encrypted fields (CertificateVerify), PQC detection gaps (empty raw_server_hello, parsing issues), HTTP redirect and network behaviour, code quality (unwrap/panic, logging), no config file, and test coverage.
-- **TLS 1.3 vs QUIC reporting**: PQC **key exchange** is reported for both TLS 1.3 and QUIC where available; PQC **signature** usage is authoritative for TLS 1.3 TCP (via CapturingVerifier) and best-effort for QUIC (certificate OID or "Not Implemented" when no cert).
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Rust 1.70+ (tested with Rust 1.75+)
-- Network connectivity for target servers
-
-Dependencies are pinned to address known advisories (e.g. `bytes`, `time`). Run `cargo audit` after `cargo update` to verify no vulnerabilities.
-
-### Installation
+Requires Rust 1.88 or later and a C compiler (for aws-lc-sys).
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/QuantaSeek.git
+git clone https://github.com/Mehrn0ush/QuantaSeek.git
 cd QuantaSeek
-
-# Build release version
 cargo build --release
-
-# The binary will be at: ./target/release/quantaseek
 ```
 
-### Basic Usage
+## Usage
 
 ```bash
-# Scan a single target with default profile (Cloudflare PQC)
+# One target; one JSON object on stdout, progress on stderr
 ./target/release/quantaseek example.com
 
-# Scan with Classic profile
-./target/release/quantaseek example.com --profile standard
+# Only the result (stderr limited to errors)
+./target/release/quantaseek -q example.com | jq '.tls.key_exchange.name, .pqc.key_exchange.value'
 
-# Scan with MaxPQC profile
-./target/release/quantaseek quantumtls.com --profile pqc-only
+# Explicit port, IPv6, or scanning by IP while validating a DNS name
+./target/release/quantaseek example.com:8443 '[2001:db8::1]:443'
+./target/release/quantaseek --sni www.example.com 192.0.2.10
 
-# Scan multiple targets
-./target/release/quantaseek example.com google.com cloudflare.com
+# Does the server accept a ClientHello that offers only pure ML-KEM?
+./target/release/quantaseek -p mlkem example.com
 
-# Enable TLS 1.2 fallback for certificate analysis
-./target/release/quantaseek example.com --tls12
-
-# Output in text format
-./target/release/quantaseek example.com --format text
+# Human-readable output for several targets
+./target/release/quantaseek -f text example.com cloudflare.com
 ```
 
-## 📖 Usage Examples
+| Option | Meaning |
+|---|---|
+| `-p, --profile <name>` | Which key-exchange groups the ClientHello offers (table below). Default `default` |
+| `-f, --format json\|text` | JSON Lines (one object per target) or text. Default `json` |
+| `--sni <name>` | Name sent in SNI and validated against the certificate. Default: the target host |
+| `--follow-redirects` | After the handshake, follow HTTP redirects and report them separately (off by default) |
+| `--probe` | Also probe groups, preference, HelloRetryRequest, downgrade and ClientHello-size tolerance (off by default) |
+| `--probe-budget <N>` | Maximum probes per target (default 40) |
+| `--probe-spacing <MS>` | Minimum milliseconds between probes, at least 100 (default 100, plus up to 50% jitter) |
+| `--policy <id>` | Apply a policy pack to the findings (available: `nist-ir-8547`) |
+| `--fail-on <severity>` | Exit 1 if a finding reaches this severity: info, low, medium, high (default) or critical; `never` disables |
+| `--ca-file <PEM>` | Trust these CA certificates instead of the webpki-roots bundle (internal PKIs) |
+| `--connect-timeout <SECS>` | TCP connect timeout (default 5) |
+| `--handshake-timeout <MS>` | TLS read/write timeout (default 5000) |
+| `--print-schema` | Print the output's JSON Schema and exit |
+| `-q, --quiet` / `-v, --verbose` | Log level on stderr (`-vv` for trace) |
 
-### Example 1: Classic TLS Scan
+Results go to stdout and logs to stderr. A target with no port is scanned on
+443 only.
+
+### Probing (`--probe`)
+
+The default scan is one handshake. `--probe` adds up to `--probe-budget` more
+TCP connections, each sending a hand-built TLS 1.3 ClientHello and reading
+only the server's first reply. The probes cover:
+- every group alone, with its key share
+- pairs of accepted groups, in both orders
+- each accepted group listed with no key share (HelloRetryRequest)
+- PQ and classical groups listed with only a classical share (downgrade)
+- the same offer sent normally, padded to 2048 bytes, split into 512-byte
+  records, and split across TCP segments (tolerance)
+
+Probing stops early after 3 consecutive connection failures. Results are in
+`probe`, with provenance `observed`.
 
 ```bash
-./target/release/quantaseek example.com --profile standard
+./target/release/quantaseek -q --probe example.com | jq '.probe.accepted_groups, .probe.downgrade.behaviour'
 ```
 
-**Output:**
-```json
-{
-  "target": "example.com",
-  "client_profile_used": "Classic",
-  "tls_version": "1.3",
-  "cipher_suite": "TLS13_AES_256_GCM_SHA384",
-  "key_exchange": ["X25519"],
-  "handshake_duration_ms": 3330,
-  "handshake_complete": true,
-  "certificate_visible": true,
-  "certificate": {
-    "subject": "*.example.com",
-    "issuer": "DigiCert Global G3 TLS ECC SHA384 2020 CA1",
-    "public_key_algorithm": "ECDSA",
-    "signature_algorithm": "ECDSA-SHA384",
-    "signature_algorithm_oid": "1.2.840.10045.4.3.3",
-    "key_size": 256,
-    "valid_from": "Wed, 15 Jan 2025 00:00:00 +0000",
-    "valid_to": "Thu, 15 Jan 2026 23:59:59 +0000",
-    "san": "*.example.com, example.com"
-  },
-  "security_score": {
-    "overall": 96,
-    "tls": 97,
-    "certificate": 95,
-    "pqc": 0
-  }
-}
-```
+### Findings and policy packs
 
-### Example 2: QUIC Server with PQC Profile
+Every result includes an `assessment`: findings from the rule catalogue
+([`rules/rules.toml`](rules/rules.toml)), applied to the observed fields.
+Each finding has:
+- a stable id (for example `QS-KEX-001`), title and severity
+- the report fields it was derived from (`evidence`, provenance `derived`)
+- remediation and primary-source references with verbatim quotes
+
+A rule that cannot run for a scan (for example a probe rule without
+`--probe`) is listed in `not_evaluated` with the reason, and never passes
+silently. `score` is derived from the findings only (method in the output).
+
+| Rule | Finding |
+|---|---|
+| QS-TLS-001 | TLS 1.2 negotiated |
+| QS-KEX-001 | No post-quantum key exchange negotiated |
+| QS-KEX-002 | Classical key share accepted while a PQ group was offered (`--probe`) |
+| QS-KEX-004 | Server accepts no post-quantum group (`--probe`) |
+| QS-KEX-005 | Large ClientHello not tolerated (`--probe`) |
+| QS-KEX-010 | Key exchange does not use ML-KEM-1024 |
+| QS-CERT-001 | Certificate chain uses quantum-vulnerable signatures |
+| QS-CERT-002 | Server authenticates with a quantum-vulnerable signature |
+| QS-CERT-003 | HashML-DSA used in a certificate (RFC 9881 §8.3) |
+| QS-CERT-004 | Certificate chain failed validation |
+
+Without `--policy`, every rule applies at its default severity. With
+`--policy nist-ir-8547`, only the rules that NIST IR 8547 (final, October
+2026) covers apply, at its severities, each carrying the quoted clause and
+deadline. No CNSA 2.0, BSI or ANSSI pack ships yet; see Limitations.
+`scripts/check-rule-metadata` fails if any rule or policy entry lacks a
+primary-source quote.
+
+Exit status:
+- 0: no finding reached `--fail-on`
+- 1: a finding reached `--fail-on`
+- 2: a target produced no observation (DNS, TCP or timeout failure, or a
+  scanner error). Command-line usage errors also exit 2.
+
+### Profiles
+
+Each profile changes the ClientHello. Profiles use only groups that the linked
+rustls 0.23.46 / aws-lc-rs 1.19.0 implement. rustls sends a key share for the
+first group, so a server that wants a different offered group answers with a
+HelloRetryRequest (reported as `tls.hello_retry_request`).
+
+| Profile | Groups offered, in order | TLS versions |
+|---|---|---|
+| `default` | X25519MLKEM768, x25519, secp256r1, secp384r1 | 1.3, 1.2 |
+| `classical` | x25519, secp256r1, secp384r1 | 1.3, 1.2 |
+| `hybrid` | X25519MLKEM768, SecP256r1MLKEM768 | 1.3 |
+| `mlkem` | MLKEM1024, MLKEM768 | 1.3 |
+| `all` | X25519MLKEM768, SecP256r1MLKEM768, MLKEM1024, MLKEM768, x25519, secp256r1, secp384r1 | 1.3, 1.2 |
+
+One profile means one handshake. To compare a server's behaviour across
+profiles, run the scanner once per profile.
+
+## Output
+
+Each target produces one JSON object (schema version `"0"`). The full schema is
+[`schema/scan-result.v0.json`](schema/scan-result.v0.json), and
+`quantaseek --print-schema` prints the same schema. Tests check that the
+committed file matches the code.
+
+How each part of the output is sourced:
+
+| Part | Provenance |
+|---|---|
+| `tls` (version, cipher suite, key exchange, HelloRetryRequest, server signature scheme) | **Observed** in the handshake |
+| `certificate_chain` | **Observed**: every certificate the server sent, leaf first, including chains that fail validation. Algorithms are named from cited OID tables |
+| `evidence.server_hellos_hex` | **Observed**: the raw ServerHello (and HelloRetryRequest) messages |
+| `http_redirect` | **Observed**, only with `--follow-redirects`. Never replaces the target's certificate |
+| `pqc.*` | **Derived**: each has a `value`, `provenance: "derived"`, and the `basis` (the registry rule applied to an observed value) |
+| `outcome.error.interpretation` | **Inferred**: the likely cause of a failure, labelled `provenance: "inferred"` |
+| `probe` | **Observed**, only with `--probe`: the server's first reply to each hand-built ClientHello |
+| `certificate_validation` | **Observed**: whether rustls/webpki accepted the chain (`valid`, `invalid` with `reason`, or `not_reached`) |
+| `not_implemented` / `not_requested` | What this version does not observe at all, and what exists but was not requested. An absent value is never a "no" |
+
+A failed scan carries `outcome.error`, with a stable `code` and a `category`
+(examples: [`tests/golden/`](tests/golden/)):
+
+| Category | Codes | Meaning |
+|---|---|---|
+| `server_result` | `handshake_rejected` (with the TLS `alert`), `certificate_rejected`, `protocol_error`, `connection_closed` | The server answered. The answer is a finding about the server, not a scan failure |
+| `network` | `dns_failed`, `connection_refused`, `connection_timeout`, `handshake_timeout`, `connection_reset`, `connection_failed` | No usable answer |
+| `scanner` | `invalid_target`, `handshake_failed`, `unknown` | Input error, or a failure the scanner did not classify |
+
+For example, `-p mlkem` against a server without ML-KEM usually gives
+`handshake_rejected` with alert `HandshakeFailure`, plus an inferred
+interpretation. The scanner cannot confirm from one handshake that the cause
+was the groups rather than another negotiation failure.
+
+Codepoints and OIDs come from [`src/constants.rs`](src/constants.rs), where
+each entry cites its source (IANA TLS registries, NIST CSOR, RFC 10024, RFC
+9881, RFC 9909, RFC 9935, RFC 10073). The table was last checked on 2026-11-13.
+
+## Limitations
+
+These describe the tool after milestone M4, as of 2026-11-13.
+
+**What the handshake can test**
+- The full handshake (rustls) can only offer the groups in the profile
+  table. A server that supports only SecP384r1MLKEM1024 or MLKEM512 fails the
+  handshake. `--probe` still finds such groups, but the certificate and
+  handshake signature are then not observed for them.
+- The prober covers the ten groups it can generate keys for (x25519,
+  secp256r1/384r1/521r1, MLKEM512/768/1024, X25519MLKEM768,
+  SecP256r1MLKEM768, SecP384r1MLKEM1024). x448, FFDHE, curveSM2MLKEM768,
+  MLKEM1024X448, the ML-KEM-512 hybrids and the obsolete Kyber drafts are
+  listed as `not_probed`, with the reason.
+- Probes offer TLS 1.3 only. A TLS 1.2-only server rejects every probe.
+- Without `--probe`, a `handshake_rejected` under a restrictive profile is
+  reported with an *inferred* cause. With `--probe`, the per-group results
+  show whether the server accepts any of the offered groups.
+- QUIC is not implemented. Every result is TCP/TLS.
+- ALPN is not offered. OCSP stapling, session resumption, early data,
+  Certificate Transparency and revocation are not observed (all listed in
+  `not_implemented`).
+
+**Certificates**
+- The chain is validated by rustls/webpki against the webpki-roots bundle.
+  webpki 0.103 verifies ECDSA, Ed25519, RSA and ML-DSA-44/65/87 signatures,
+  but not SLH-DSA, composite ML-DSA or Ed448. Such chains get
+  `certificate_validation.status: "invalid"`, even when correctly signed. The
+  chain is still reported as sent.
+- `pqc.certificate_chain` counts a certificate as post-quantum when its own
+  signature algorithm is ML-DSA, SLH-DSA or composite ML-DSA. Whether the
+  leaf's key is post-quantum shows in `pqc.handshake_signature`.
+- Composite ML-DSA and HashML-DSA are recognised by OID only. No testbed
+  fixture exists for them, because no maintained implementation produces
+  RFC 10073 composites.
+
+**Findings and policies**
+- Only the NIST IR 8547 policy pack exists. A CNSA 2.0 pack needs the NSA's
+  published text, which could not be retrieved for quoting.
+  QS-KEX-010 (not ML-KEM-1024) is reported at `info` severity without a
+  policy. BSI TR-02102-1 and ANSSI packs have not been written.
+- Findings cover what QuantaSeek observes. A clean result says nothing about
+  algorithms used elsewhere (other ports, protocols, or stored data).
+
+**Operation**
+- Targets are scanned one after another. There is no concurrency and no
+  target-file or CIDR input yet (ROADMAP M5). Within one target, probes are
+  spaced and capped (see `--probe`).
+- Exit status 2 does not distinguish a scan error from a command-line error.
+
+## Responsible use
+
+Scan only systems you own or are authorised to test. A default scan opens one
+TCP connection and performs one handshake per target. `--probe` adds up to 40
+connections, at least 100 ms apart. `--follow-redirects` adds HTTPS requests. There is no rate limiting yet, so do not run it against
+third-party hosts at volume.
+
+## Development
 
 ```bash
-./target/release/quantaseek quantumtls.com --profile pqc-only
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets          # loopback only, no internet access
+cargo audit
+cargo deny check
 ```
 
-**Output:**
-```json
-{
-  "target": "quantumtls.com",
-  "client_profile_used": "MaxPQC",
-  "tls_version": "1.3",
-  "cipher_suite": "TLS13_AES_128_GCM_SHA256",
-  "key_exchange": ["X25519"],
-  "handshake_duration_ms": 16961,
-  "handshake_complete": true,
-  "certificate_visible": true,
-  "raw_server_hello": [2, 0, 0, 118, ...],
-  "protocol_support": {
-    "tls": true,
-    "quic": "unknown",
-    "http3": "unknown"
-  }
-}
-```
+The integration tests (`tests/`) run in-process rustls servers on 127.0.0.1
+with throwaway CAs and chosen key-exchange groups. They cover ports, SNI,
+profiles, outcome classification, redirects and the output schema. To refresh
+the golden files after an intended output change, run
+`UPDATE_GOLDEN=1 cargo test --test schema`. After changing the report types,
+regenerate the schema with
+`quantaseek --print-schema > schema/scan-result.v0.json`.
 
-**Note:** QUIC servers automatically trigger TCP/TLS fallback for certificate extraction and PQC detection.
+### Testbed
 
-## 📋 Command Line Options
-
-```
-USAGE:
-    quantaseek [OPTIONS] <targets>...
-
-ARGS:
-    <targets>...    Target hostnames (e.g., example.com:443, google.com)
-
-OPTIONS:
-    -p, --profile <profile>
-            Handshake profile to use [default: cloudflare-pqc]
-            [possible values: standard, cloudflare-pqc, hybrid-pqc, pqc-only]
-
-    -f, --format <format>
-            Output format [default: json]
-            [possible values: json, text]
-
-        --tls12
-            Enable TLS 1.2 fallback for certificate analysis
-
-        --ignore-mismatch
-            Ignore hostname mismatch for experimental servers
-
-    -q, --quiet
-            Suppress banner, progress lines, and summary; only print result (JSON/text).
-            Use in production or scripts to avoid cluttering stdout.
-
-    -v, --verbose
-            Enable debug and progress messages (QUIC fallback, HTTP redirect, etc.).
-            Equivalent to setting QUANTASEEK_DEBUG=1.
-
-    -h, --help
-            Print help information
-
-    -V, --version
-            Print version information
-```
-
-### Production use and logging
-
-By default the scanner prints a banner, per-target progress (`Scanning: ...`, `✅ Completed`), and a summary. Debug messages (HTTP redirect, QUIC fallback) are **off** unless requested.
-
-- **Production / scripts:** use `-q` / `--quiet` so only the result (e.g. JSON) is printed; no banner or summary. Example: `./target/release/quantaseek -q example.com google.com > out.jsonl`
-- **Debug:** use `-v` / `--verbose`, or set `QUANTASEEK_DEBUG=1`, to enable `[DEBUG]` and `[QUIC Fallback]` messages on stderr. This avoids flooding the terminal in production.
-
-## 📊 Output Format
-
-### JSON Output Structure
-
-```json
-{
-  "target": "example.com",
-  "client_profile_used": "Classic",
-  "tls_version": "1.3",
-  "cipher_suite": "TLS13_AES_256_GCM_SHA384",
-  "key_exchange": ["X25519"],
-  "handshake_complete": true,
-  "handshake_duration_ms": 3330,
-  "total_scan_duration_ms": 3576,
-  "certificate_visible": true,
-  "certificate": { ... },
-  "raw_server_hello": [ ... ],
-  "analysis": {
-    "pqc_detected": false,
-    "hybrid_detected": false,
-    "security_level": "Classical Only",
-    "security_features": ["TLS 1.3", "X25519"],
-    "server_endpoint_fingerprint": "x25519-aes256gcm"
-  },
-  "security_score": {
-    "overall": 96,
-    "tls": 97,
-    "certificate": 95,
-    "pqc": 0,
-    "formula": {
-      "overall_method": "Overall = 0.50×TLS(97) + 0.50×Certificate(95) = 96",
-      "tls_method": "TLS = Version(100)×0.40 + Cipher(100)×0.30 + KeyExchange(90)×0.30 = 97",
-      "certificate_method": "Certificate = (Validation(100) + KeyStrength(90)) / 2 = 95"
-    }
-  },
-  "performance_analysis": {
-    "handshake_timing": {
-      "duration_ms": 3330,
-      "category": "very_slow",
-      "benchmark": {
-        "excellent": "< 200ms",
-        "good": "200-400ms",
-        "acceptable": "400-800ms",
-        "slow": "800-1500ms",
-        "very_slow": "> 1500ms"
-      }
-    },
-    "overhead_analysis": {
-      "certificate_overhead_ms": 80,
-      "network_overhead_ms": 0,
-      "pqc_overhead_ms": 0,
-      "overhead_vs_baseline_percent": 2120.0
-    }
-  },
-  "security_warnings": [ ... ],
-  "recommendations": [ ... ]
-}
-```
-
-## 🔍 Technical Details
-
-### TLS Handshake Process
-
-1. **Connection Establishment**: TCP connection to target server (default port 443)
-2. **TLS Handshake**: Real TLS 1.3 handshake using `rustls` with selected profile
-3. **Raw Record Capture**: Captures raw TLS records including ServerHello for analysis
-4. **Certificate Extraction**: Extracts and validates X.509 certificates
-5. **PQC Detection**: Analyzes key exchange algorithms and extensions for PQC support
-6. **Security Scoring**: Calculates multi-component security scores with explainable formulas
-
-### QUIC Support
-
-For QUIC-enabled servers:
-- Automatic detection of QUIC-capable servers
-- TCP/TLS fallback with robust retry logic (minimum 3 attempts)
-- Multiple port attempts (443, actual_port, 8443)
-- Extended timeout (minimum 8 seconds) for rate-limited servers
-- Detailed logging for fallback attempts
-- Certificate extraction via TLS 1.2 fallback when needed
-
-### Certificate Analysis
-
-- **RFC 6125 Compliance**: Strict hostname validation
-- **Algorithm Consistency**: Validates public key and signature algorithm consistency
-- **OID Extraction**: Extracts signature algorithm OIDs for PQC detection
-- **SAN Parsing**: Parses Subject Alternative Names for multi-domain certificates
-- **Validity Checking**: Validates certificate expiration dates
-- **No Mock Data**: 100% real certificate data from actual handshakes
-
-### PQC Detection Methods
-
-1. **Key Exchange Analysis**: Detects PQC KEM groups in key_share extension
-2. **Certificate OID Analysis**: Identifies PQC signature algorithms via certificate OIDs
-3. **Raw TLS Parsing**: Extracts cipher suites and groups directly from ServerHello
-4. **Extension Analysis**: Analyzes supported_groups and key_share extensions
-
-## 🧪 Testing & Validation
-
-### Test Results
-
-Based on comprehensive testing with 60+ servers:
-
-- **Success Rate**: 83.3% (50/60 successful scans)
-- **Cipher Suite Extraction**: 75% success rate
-- **PQC Detection**: 25% of servers show PQC support
-- **Profile Consistency**: 100% correct profile names in successful scans
-- **Certificate Accuracy**: 100% real certificate data, no mock data
-
-### Known Limitations
-
-1. **TLS 1.3 Encryption**: CertificateVerify signature algorithms are encrypted in TLS 1.3, reported as "Unknown"
-2. **QUIC certificate extraction**: Certificate and key exchange for QUIC are obtained via TCP/TLS 1.2 fallback only; direct extraction from the QUIC connection is not implemented. QUIC-only servers may show no certificate or key_exchange
-3. **QUIC-Only Servers**: Some QUIC-only servers do not offer TCP/TLS on the same host/port; certificate and PQC detection will be unavailable for those targets
-4. **Rate Limiting**: Some servers may rate-limit connections, causing occasional failures
-5. **Network Errors**: Network connectivity issues may cause scan failures (reported with proper error messages)
-6. **Empty raw_server_hello**: Classic profile or some fallback paths do not capture raw ServerHello, so raw parsing–based PQC detection is unavailable for those scans
-
-**Full details:** For a complete list of features, capabilities, and limitations (in English), see **[FEATURES_AND_LIMITATIONS.md](FEATURES_AND_LIMITATIONS.md)**.
-
-## 🛠️ Development
-
-### Building from Source
+[`testbed/`](testbed/README.md) runs 17 TLS servers in Docker, each with a
+known configuration: OpenSSL 3.5.9 and Go 1.27, with ML-KEM hybrid and pure
+groups, HelloRetryRequest, TLS 1.2, ML-DSA and SLH-DSA chains, and expired,
+mismatched and self-signed certificates, a hybrid+classical server, and a
+ClientHello-size middlebox. `testbed/confirm.sh` checks every
+server with `openssl s_client`, independently of QuantaSeek, and
+`tests/testbed.rs` asserts the same values against the scanner:
 
 ```bash
-# Clone repository
-git clone https://github.com/your-username/QuantaSeek.git
-cd QuantaSeek
-
-# Build debug version
-cargo build
-
-# Build release version
-cargo build --release
-
-# Run tests
-cargo test
-
-# Run with logging
-RUST_LOG=debug cargo run --release -- example.com
+docker compose -f testbed/compose.yml up -d --build --wait
+sh testbed/confirm.sh
+cargo test --features testbed --test testbed
 ```
 
-### Project Structure
+The prober's expected results are the per-group acceptance matrix that
+`confirm.sh` builds with `openssl s_client`.
 
-```
-QuantaSeek/
-├── src/
-│   ├── main.rs           # CLI entry point
-│   ├── types.rs          # Data structures and types
-│   ├── handshake.rs      # TLS/QUIC handshake engine
-│   ├── detector.rs       # PQC detection logic
-│   ├── tls_parser.rs     # Raw TLS message parsing
-│   ├── constants.rs      # TLS/PQC constants
-│   ├── security_scoring.rs  # Security score calculation
-│   └── output.rs         # Output formatting
-├── Cargo.toml           # Rust dependencies
-├── README.md            # This file
-└── LICENSE              # MIT License
+### Fuzzing
+
+```bash
+cd fuzz && cargo +nightly fuzz run server_hello -- -max_total_time=300
 ```
 
-### Dependencies
+The targets are `server_hello` (record splitter, ServerHello and
+HelloRetryRequest extraction), `server_reply` (the prober's reply parser),
+`certificate_report` (X.509 wrapper) and `target_parse`.
 
-- **rustls** (0.23+): TLS implementation with PQC support
-- **tokio-rustls** (0.26+): Async TLS streams
-- **quinn** (0.11): QUIC protocol support
-- **webpki-roots**: Root certificate store
-- **x509-parser**: X.509 certificate parsing
-- **clap**: Command-line argument parsing
-- **serde/serde_json**: JSON serialization
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs fmt, clippy,
+tests on Linux and macOS, an MSRV (1.88) check, audit and deny. It also has
+an offline-test job, a testbed job, and a nightly fuzz workflow. None of
+these workflows has run on GitHub yet.
 
-## 📝 License
+## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **rustls**: Modern TLS library with PQC support
-- **NIST**: Post-Quantum Cryptography standardization
-- **IETF**: TLS 1.3 and QUIC protocol specifications
-
-## 📧 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 🐛 Reporting Issues
-
-If you encounter any issues or have suggestions, please open an issue on GitHub.
-
-## 📚 References
-
-- [RFC 8446 - TLS 1.3](https://tools.ietf.org/html/rfc8446)
-- [RFC 6125 - PKIX Certificate and CRL Profile](https://tools.ietf.org/html/rfc6125)
-- [NIST PQC Standardization](https://www.nist.gov/pqc)
-- [rustls Documentation](https://docs.rs/rustls/)
-
----
-
-**Made with ❤️ for Post-Quantum Cryptography research**
+No license has been chosen yet, so no rights are granted beyond viewing the
+source. See [ROADMAP.md](ROADMAP.md) for the options under consideration.

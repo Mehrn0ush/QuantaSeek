@@ -1,0 +1,47 @@
+# Policy pack: NIST IR 8547 (final), "Transition to Post-Quantum
+# Cryptography Standards", October 2026.
+#
+# Text read and quoted from the PDF retrieved 2026-11-13 from
+# https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf
+#
+# Rules not listed here are not part of this policy.
+
+id = "nist-ir-8547"
+title = "NIST IR 8547 (final, October 2026): Transition to Post-Quantum Cryptography Standards"
+url = "https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf"
+retrieved = "2026-11-13"
+
+[[rule]]
+id = "QS-KEX-001"
+severity = "high"
+clause = "4.1.2, Table 4"
+deadline = "deprecated after 2030; disallowed after 2035 (federal high value assets: PQC key establishment by 2030-12-31)"
+quote = "Similar to the transition for digital signature algorithms, NIST will deprecate all quantum-vulnerable cryptography after 2030 and disallow its use under NIST standards and guidelines after 2035."
+
+[[rule]]
+id = "QS-KEX-004"
+severity = "high"
+clause = "4.1.2, Table 4"
+deadline = "deprecated after 2030; disallowed after 2035"
+quote = "Similar to the transition for digital signature algorithms, NIST will deprecate all quantum-vulnerable cryptography after 2030 and disallow its use under NIST standards and guidelines after 2035."
+
+[[rule]]
+id = "QS-TLS-001"
+severity = "medium"
+clause = "4 (citing EO 14306 and OMB M-26-15)"
+deadline = "federal agencies: support TLS 1.3 no later than 2030-01-02"
+quote = "agencies are also required by Executive Order 14306 [EO14306] and OMB Memorandum M-26-15 to support TLS version 1.3 no later than January 2, 2030."
+
+[[rule]]
+id = "QS-CERT-001"
+severity = "medium"
+clause = "4.1.1, Table 2"
+deadline = "deprecated after 2030; disallowed after 2035 (federal high value assets: PQC signatures by 2031-12-31)"
+quote = "NIST will instead deprecate all quantum-vulnerable digital signature algorithms after 2030 and disallow their use under NIST standards and guidelines after 2035."
+
+[[rule]]
+id = "QS-CERT-002"
+severity = "medium"
+clause = "4.1.1, Table 2"
+deadline = "deprecated after 2030; disallowed after 2035"
+quote = "NIST will instead deprecate all quantum-vulnerable digital signature algorithms after 2030 and disallow their use under NIST standards and guidelines after 2035."

@@ -1,0 +1,142 @@
+# QuantaSeek rule catalogue.
+#
+# Each rule's logic is in src/findings/rules.rs; this file holds what a
+# reader of a finding needs. Every reference must point at a primary source
+# and quote it verbatim (checked by `scripts/check-rule-metadata`).
+#
+# default_severity applies when no policy pack is selected.
+
+[[rule]]
+id = "QS-TLS-001"
+title = "TLS 1.2 negotiated"
+default_severity = "medium"
+description = "The handshake negotiated TLS 1.2. The standardised ML-KEM hybrid groups are defined for TLS 1.3 only, so a TLS 1.2 connection cannot use post-quantum key exchange."
+remediation = "Enable TLS 1.3 on the server, with an ML-KEM hybrid group such as X25519MLKEM768."
+evaluated_on = "handshake"
+[[rule.reference]]
+source = "RFC 10024"
+url = "https://www.rfc-editor.org/rfc/rfc10024"
+section = "1"
+quote = "[RFC9954] defines a framework for combining traditional key exchanges with next-generation key exchange in TLS 1.3."
+[[rule.reference]]
+source = "NIST IR 8547 (final, October 2026)"
+url = "https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf"
+section = "4.2"
+quote = "TLS 1.3 also provides a practical near-term path to quantum-resistant key establishment, including through hybrid key-exchange mechanisms that combine ML-KEM with classical algorithms."
+
+[[rule]]
+id = "QS-KEX-001"
+title = "No post-quantum key exchange negotiated"
+default_severity = "high"
+description = "The completed handshake used a classical-only key-exchange group. Traffic recorded today could be decrypted later by a cryptanalytically relevant quantum computer (\"harvest now, decrypt later\")."
+remediation = "Offer an ML-KEM hybrid group (X25519MLKEM768, SecP256r1MLKEM768 or SecP384r1MLKEM1024) on the server and prefer it over classical groups."
+evaluated_on = "handshake"
+[[rule.reference]]
+source = "NIST IR 8547 (final, October 2026)"
+url = "https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf"
+section = "4.1.2"
+quote = "in order to mitigate the risk of “harvest now, decrypt later” attacks on network communications, application-specific guidance, as described in Sec. 4.2, may require or recommend migration to quantum-resistant key-establishment schemes before the classical schemes are generally disallowed."
+
+[[rule]]
+id = "QS-KEX-002"
+title = "Classical key share accepted while a post-quantum group was offered"
+default_severity = "low"
+description = "Offered a post-quantum group and a classical group, with a key share for the classical group only, the server completed the exchange with the classical group instead of asking for the post-quantum share. This is permitted by TLS 1.3, but clients that send only a classical share (common for compatibility) will not get post-quantum protection from this server."
+remediation = "Configure the server's group preference so that a supported post-quantum group is chosen when the client lists it, even if that costs a HelloRetryRequest."
+evaluated_on = "probe"
+[[rule.reference]]
+source = "RFC 8446"
+url = "https://www.rfc-editor.org/rfc/rfc8446"
+section = "4.1.1"
+quote = "If the server selects an (EC)DHE group and the client did not offer a compatible \"key_share\" extension in the initial ClientHello, the server MUST respond with a HelloRetryRequest (Section 4.1.4) message."
+
+[[rule]]
+id = "QS-KEX-004"
+title = "Server accepts no post-quantum key-exchange group"
+default_severity = "high"
+description = "Probed one group at a time, the server accepted at least one group, but none of them is post-quantum. This covers the groups the prober can offer; see probe.groups for what was not probed."
+remediation = "Enable an ML-KEM hybrid group (X25519MLKEM768 is the IANA-recommended one) in the server's TLS configuration."
+evaluated_on = "probe"
+[[rule.reference]]
+source = "NIST IR 8547 (final, October 2026)"
+url = "https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf"
+section = "4.1.2"
+quote = "NIST will deprecate all quantum-vulnerable cryptography after 2030 and disallow its use under NIST standards and guidelines after 2035."
+
+[[rule]]
+id = "QS-KEX-005"
+title = "Large ClientHello not tolerated"
+default_severity = "high"
+description = "A ClientHello padded to the size of a post-quantum offer, or carrying a post-quantum key share, was dropped while the same smaller offer succeeded. Clients that send ML-KEM key shares (over 1 KB) will fail to connect to this endpoint; a middlebox on the path or the server itself is size-intolerant."
+remediation = "Find and update the component that drops large ClientHello records (load balancer, firewall, TLS terminator)."
+evaluated_on = "probe"
+[[rule.reference]]
+source = "RFC 10024"
+url = "https://www.rfc-editor.org/rfc/rfc10024"
+section = "4.1"
+quote = "The size of the client share is 1216 bytes (1184 bytes for the ML-KEM part and 32 bytes for X25519)."
+
+[[rule]]
+id = "QS-KEX-010"
+title = "Key exchange does not use ML-KEM-1024"
+default_severity = "info"
+description = "The negotiated key exchange is not based on ML-KEM-1024 (security category 5). NIST recommends ML-KEM-768 by default; some policies (for example CNSA 2.0) require ML-KEM-1024."
+remediation = "Where the applicable policy requires ML-KEM-1024, enable SecP384r1MLKEM1024 or MLKEM1024 and prefer it."
+evaluated_on = "handshake"
+[[rule.reference]]
+source = "NIST IR 8547 (final, October 2026)"
+url = "https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf"
+section = "4.1.2, Table 5"
+quote = "NIST recommends using ML-KEM-768 as the default parameter set, as it provides a large security margin at a reasonable performance cost. In cases where this is impractical or when higher security is required, other parameter sets may be used."
+
+[[rule]]
+id = "QS-CERT-001"
+title = "Certificate chain uses quantum-vulnerable signatures"
+default_severity = "medium"
+description = "At least one certificate the server sent is signed with RSA, ECDSA or EdDSA, which a cryptanalytically relevant quantum computer could forge."
+remediation = "Plan migration of the issuing CA hierarchy to ML-DSA (FIPS 204) or SLH-DSA (FIPS 205) certificates as client support allows."
+evaluated_on = "chain"
+[[rule.reference]]
+source = "NIST IR 8547 (final, October 2026)"
+url = "https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf"
+section = "4.1.1, Table 2"
+quote = "NIST will instead deprecate all quantum-vulnerable digital signature algorithms after 2030 and disallow their use under NIST standards and guidelines after 2035."
+
+[[rule]]
+id = "QS-CERT-002"
+title = "Server authenticates with a quantum-vulnerable signature"
+default_severity = "medium"
+description = "The server's handshake signature (TLS 1.3 CertificateVerify, TLS 1.2 ServerKeyExchange) used a classical scheme, so its authentication relies on a quantum-vulnerable key."
+remediation = "Deploy an ML-DSA certificate and key for clients that support it."
+evaluated_on = "handshake"
+[[rule.reference]]
+source = "NIST IR 8547 (final, October 2026)"
+url = "https://nvlpubs.nist.gov/nistpubs/ir/2026/NIST.IR.8547.pdf"
+section = "4.1.1, Table 2"
+quote = "NIST will instead deprecate all quantum-vulnerable digital signature algorithms after 2030 and disallow their use under NIST standards and guidelines after 2035."
+
+[[rule]]
+id = "QS-CERT-003"
+title = "HashML-DSA used in a certificate"
+default_severity = "high"
+description = "A certificate in the chain uses a pre-hash ML-DSA (HashML-DSA) key or signature OID, which RFC 9881 forbids in X.509 certificates."
+remediation = "Reissue the certificate with pure ML-DSA (id-ml-dsa-44/65/87)."
+evaluated_on = "chain"
+[[rule.reference]]
+source = "RFC 9881"
+url = "https://www.rfc-editor.org/rfc/rfc9881"
+section = "8.3"
+quote = "The HashML-DSA mode defined in Section 5.4 of [FIPS204] MUST NOT be used; in other words, public keys identified by id-hash-ml-dsa-44-with-sha512, id-hash-ml-dsa-65-with-sha512, and id-hash-ml-dsa-87-with-sha512 MUST NOT be in X.509 certificates used for CRLs, OCSP, certificate issuance, and related PKIX protocols."
+
+[[rule]]
+id = "QS-CERT-004"
+title = "Certificate chain failed validation"
+default_severity = "high"
+description = "The certificate chain the server presented was rejected (for example expired, issued for another name, or not issued by a trusted CA). Not evaluated when the chain uses signature algorithms the validator cannot verify."
+remediation = "Install a valid certificate chain for the service name, issued by a CA the clients trust."
+evaluated_on = "chain"
+[[rule.reference]]
+source = "RFC 5280"
+url = "https://www.rfc-editor.org/rfc/rfc5280"
+section = "6.1.3"
+quote = "(2)  The certificate validity period includes the current time."

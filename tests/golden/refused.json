@@ -1,0 +1,117 @@
+{
+  "assessment": {
+    "findings": [],
+    "not_evaluated": [
+      {
+        "id": "QS-TLS-001",
+        "reason": "the handshake did not complete"
+      },
+      {
+        "id": "QS-KEX-001",
+        "reason": "the handshake did not complete"
+      },
+      {
+        "id": "QS-KEX-002",
+        "reason": "--probe was not requested"
+      },
+      {
+        "id": "QS-KEX-004",
+        "reason": "--probe was not requested"
+      },
+      {
+        "id": "QS-KEX-005",
+        "reason": "--probe was not requested"
+      },
+      {
+        "id": "QS-KEX-010",
+        "reason": "the handshake did not complete"
+      },
+      {
+        "id": "QS-CERT-001",
+        "reason": "no certificates were received"
+      },
+      {
+        "id": "QS-CERT-002",
+        "reason": "the handshake did not complete"
+      },
+      {
+        "id": "QS-CERT-003",
+        "reason": "no certificates were received"
+      },
+      {
+        "id": "QS-CERT-004",
+        "reason": "the server presented no certificates"
+      }
+    ],
+    "policy": null,
+    "score": {
+      "method": "100 minus 0 per info, 2 per low, 10 per medium, 25 per high and 50 per critical finding, floored at 0; capped at 40 if any finding is critical. Rules listed in not_evaluated do not affect the score.",
+      "provenance": "derived",
+      "value": 100
+    }
+  },
+  "certificate_chain": [],
+  "certificate_validation": {
+    "reason": null,
+    "status": "not_reached",
+    "trust_store": "custom"
+  },
+  "duration_ms": "<volatile>",
+  "evidence": {
+    "server_hellos_hex": []
+  },
+  "http_redirect": null,
+  "not_implemented": [
+    "quic",
+    "alpn",
+    "ocsp_stapling",
+    "session_resumption",
+    "early_data",
+    "certificate_transparency",
+    "revocation"
+  ],
+  "not_requested": [
+    "probe",
+    "http_redirect"
+  ],
+  "outcome": {
+    "error": {
+      "alert": null,
+      "category": "network",
+      "code": "connection_refused",
+      "details": "<volatile>",
+      "interpretation": null,
+      "message": "<volatile>"
+    },
+    "status": "failed"
+  },
+  "pqc": null,
+  "probe": null,
+  "profile": {
+    "name": "classical",
+    "offered_groups": [
+      "x25519",
+      "secp256r1",
+      "secp384r1"
+    ],
+    "offered_tls_versions": [
+      "1.3",
+      "1.2"
+    ]
+  },
+  "schema_version": "0",
+  "started_at": "<volatile>",
+  "target": {
+    "address": null,
+    "host": "127.0.0.1",
+    "input": "<volatile>",
+    "port": null,
+    "server_name": "127.0.0.1"
+  },
+  "tls": null,
+  "tool": {
+    "name": "quantaseek",
+    "tls_stack": "rustls 0.23 / aws-lc-rs",
+    "version": "<volatile>"
+  }
+}
