@@ -23,11 +23,35 @@ pub struct HandshakeConfig {
 
 impl Default for HandshakeConfig {
     fn default() -> Self {
+        // Allow deterministic but configurable behaviour via environment variables.
+        // If parsing fails, fall back to safe hard-coded defaults.
+        fn env_u64(var: &str, default: u64) -> u64 {
+            std::env::var(var)
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(default)
+        }
+
+        fn env_u32(var: &str, default: u32) -> u32 {
+            std::env::var(var)
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(default)
+        }
+
         Self {
-            timeout_ms: 5000,
-            retry_attempts: 3,
-            retry_backoff_multiplier: 2,
-            retry_base_delay_ms: 100,
+            // Overall handshake timeout in milliseconds
+            // QUANTASEEK_HANDSHAKE_TIMEOUT_MS=8000
+            timeout_ms: env_u64("QUANTASEEK_HANDSHAKE_TIMEOUT_MS", 5000),
+            // Number of retry attempts for fallback (profile/port/QUIC)
+            // QUANTASEEK_MAX_RETRIES=5
+            retry_attempts: env_u32("QUANTASEEK_MAX_RETRIES", 3),
+            // Exponential backoff multiplier for retries
+            // QUANTASEEK_RETRY_BACKOFF_MULTIPLIER=2
+            retry_backoff_multiplier: env_u32("QUANTASEEK_RETRY_BACKOFF_MULTIPLIER", 2),
+            // Base delay (ms) before first retry
+            // QUANTASEEK_RETRY_BASE_DELAY_MS=100
+            retry_base_delay_ms: env_u64("QUANTASEEK_RETRY_BASE_DELAY_MS", 100),
             enable_optimizations: true,
             tls12_fallback_enabled: false,
             always_attempt_tls12_fallback: false,
@@ -238,6 +262,17 @@ pub struct PqcAnalysis {
     pub extension_usage: Option<ExtensionUsage>,
     /// Hybrid combination analysis
     pub hybrid_details: Option<HybridDetails>,
+    /// Machine-readable observation status for PQC signatures: one of
+    /// \"observed\", \"unknown\", \"not_applicable\", \"not_implemented\".
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub pqc_signature_observation: String,
+    /// Whether a PQC key exchange was directly observed in the handshake
+    pub pqc_key_exchange_observed: bool,
+    /// Whether a PQC signature was directly observed (via handshake or certificate/CT)
+    pub pqc_signature_observed: bool,
+    /// Whether PQC signature usage was inferred from certificate/CT OIDs rather than
+    /// from a visible CertificateVerify signature
+    pub pqc_signature_inferred_from_cert: bool,
 }
 
 /// Signature negotiation status
@@ -349,6 +384,147 @@ pub struct PerformanceWarning {
     pub recommendation: Option<String>,
 }
 
+/// Stable, machine-readable error codes for scan failures.
+/// Used in the JSON error schema so consumers can rely on fixed codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// Connection refused (server not listening or not reachable)
+    ConnectionRefused,
+    /// Connection timed out
+    ConnectionTimeout,
+    /// DNS resolution failed
+    DnsFailed,
+    /// Connection reset by peer
+    ConnectionReset,
+    /// Permission denied (e.g. binding port)
+    PermissionDenied,
+    /// QUIC reachable but TLS connection failed (QUIC-only server)
+    QuicOnlyOrTlsUnavailable,
+    /// Hostname suggests QUIC/experimental but connection failed
+    QuicLikelyConnectionFailed,
+    /// Generic connection failure (all ports failed)
+    ConnectionFailed,
+    /// Handshake failed (TLS/QUIC negotiation failed)
+    HandshakeFailed,
+    /// Scan failed (generic; used in batch when no specific code applies)
+    ScanFailed,
+    /// Unknown or uncategorized error
+    Unknown,
+}
+
+impl ErrorCode {
+    /// Human-readable default message for this code
+    pub fn default_message(&self) -> &'static str {
+        match self {
+            ErrorCode::ConnectionRefused => {
+                "Connection refused - server may be offline or not listening on TLS ports"
+            }
+            ErrorCode::ConnectionTimeout => {
+                "Connection timeout - server may be slow or overloaded"
+            }
+            ErrorCode::DnsFailed => "DNS resolution failed - check hostname spelling",
+            ErrorCode::ConnectionReset => {
+                "Connection reset - server may not support the requested TLS configuration"
+            }
+            ErrorCode::PermissionDenied => {
+                "Permission denied - may need elevated privileges"
+            }
+            ErrorCode::QuicOnlyOrTlsUnavailable => {
+                "QUIC support detected but TLS connection failed"
+            }
+            ErrorCode::QuicLikelyConnectionFailed => {
+                "Server appears to be QUIC-only or experimental"
+            }
+            ErrorCode::ConnectionFailed => "Standard TLS connection failed",
+            ErrorCode::HandshakeFailed => {
+                "Handshake failed - server may not support the requested TLS configuration"
+            }
+            ErrorCode::ScanFailed => "Scan failed",
+            ErrorCode::Unknown => "Unknown connection error",
+        }
+    }
+
+    /// Optional recommendation for remediation
+    pub fn recommendation(&self) -> Option<&'static str> {
+        match self {
+            ErrorCode::QuicOnlyOrTlsUnavailable | ErrorCode::QuicLikelyConnectionFailed => {
+                Some("Try using curl with --http3 or a QUIC-enabled client. For PQC testing, consider using a different server or protocol.")
+            }
+            ErrorCode::ConnectionFailed | ErrorCode::HandshakeFailed => {
+                Some("Try with different profiles (standard, cloudflare-pqc) or check if server supports PQC/TLS 1.3. For experimental servers, try ports 853, 4433.")
+            }
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorCode::ConnectionRefused => write!(f, "connection_refused"),
+            ErrorCode::ConnectionTimeout => write!(f, "connection_timeout"),
+            ErrorCode::DnsFailed => write!(f, "dns_failed"),
+            ErrorCode::ConnectionReset => write!(f, "connection_reset"),
+            ErrorCode::PermissionDenied => write!(f, "permission_denied"),
+            ErrorCode::QuicOnlyOrTlsUnavailable => write!(f, "quic_only_or_tls_unavailable"),
+            ErrorCode::QuicLikelyConnectionFailed => write!(f, "quic_likely_connection_failed"),
+            ErrorCode::ConnectionFailed => write!(f, "connection_failed"),
+            ErrorCode::HandshakeFailed => write!(f, "handshake_failed"),
+            ErrorCode::ScanFailed => write!(f, "scan_failed"),
+            ErrorCode::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+/// Schema version for the error object. Bump when adding or changing fields.
+pub const ERROR_SCHEMA_VERSION: u32 = 1;
+
+/// Structured error information for a scan (stable JSON schema).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScanError {
+    /// Schema version for the error object (consumers can detect format)
+    #[serde(rename = "schema_version")]
+    pub schema_version: u32,
+    /// Stable, machine-readable error code
+    pub code: String,
+    /// Human-readable error message
+    pub message: String,
+    /// Optional additional details for debugging (e.g. ports_tried, flags)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    /// Optional recommendation for remediation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<String>,
+}
+
+impl ScanError {
+    /// Build a ScanError from a stable ErrorCode with optional context in details.
+    pub fn from_code(code: ErrorCode, details: Option<String>) -> Self {
+        let message = code.default_message().to_string();
+        let recommendation = code.recommendation().map(String::from);
+        ScanError {
+            schema_version: ERROR_SCHEMA_VERSION,
+            code: code.to_string(),
+            message,
+            details,
+            recommendation,
+        }
+    }
+
+    /// Build with a custom message (e.g. from underlying error string) but stable code.
+    pub fn from_code_with_message(code: ErrorCode, message: String, details: Option<String>) -> Self {
+        let recommendation = code.recommendation().map(String::from);
+        ScanError {
+            schema_version: ERROR_SCHEMA_VERSION,
+            code: code.to_string(),
+            message,
+            details,
+            recommendation,
+        }
+    }
+}
+
 /// Complete scan result with all analysis
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -394,6 +570,16 @@ pub struct ScanResult {
     /// Reason for cipher_suite "unknown", e.g. "no_server_hello_available".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cipher_suite_reason: Option<String>,
+    /// High-level description of the fallback strategy that was attempted (if any),
+    /// e.g. "quic_then_tcp_tls", "ports_and_profile_chain".
+    pub fallback_strategy_used: Option<String>,
+    /// Whether the chosen fallback strategy ultimately succeeded.
+    pub fallback_success: Option<bool>,
+    /// Whether the target appears to be QUIC-only (QUIC reachable but TLS unreachable).
+    pub quic_only_server_detected: Option<bool>,
+    /// Optional structured error information when the scan failed or was partial.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ScanError>,
 }
 
 /// Extension negotiation status

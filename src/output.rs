@@ -44,6 +44,10 @@ impl ScanResult {
             http_redirect: None,
             connection_type: None,
             cipher_suite_reason: None,
+            fallback_strategy_used: None,
+            fallback_success: None,
+            quic_only_server_detected: None,
+            error: None,
         }
     }
 
@@ -230,7 +234,23 @@ impl OutputFormatter {
             json_output["cipher_suite_reason"] = json!(reason);
         }
 
-        // IMPROVED: Use compact JSON for better jq compatibility
+        // Fallback/QUIC status (clear for consumers)
+        if result.fallback_strategy_used.is_some()
+            || result.fallback_success.is_some()
+            || result.quic_only_server_detected.is_some()
+        {
+            json_output["fallback_strategy_used"] = json!(result.fallback_strategy_used);
+            json_output["fallback_success"] = json!(result.fallback_success);
+            json_output["quic_only_server_detected"] = json!(result.quic_only_server_detected);
+        }
+
+        // Stable error schema when scan failed or partial
+        if let Some(ref err) = result.error {
+            json_output["error"] = json!(err);
+        }
+
+        // IMPROVED: Use compact JSON for better jq compatibility, but never panic on serialization.
+        // If serialization fails, return an empty JSON object string instead of aborting the process.
         serde_json::to_string(&json_output).unwrap_or_else(|_| "{}".to_string())
     }
 
@@ -273,6 +293,10 @@ impl OutputFormatter {
             "pqc_signature_algorithm": result.analysis.pqc_signature_algorithm,
             "signature_negotiation_status": result.analysis.signature_negotiation_status,
             "server_endpoint_fingerprint": result.analysis.server_endpoint_fingerprint,
+            "pqc_signature_observation": result.analysis.pqc_signature_observation,
+            "pqc_key_exchange_observed": result.analysis.pqc_key_exchange_observed,
+            "pqc_signature_observed": result.analysis.pqc_signature_observed,
+            "pqc_signature_inferred_from_cert": result.analysis.pqc_signature_inferred_from_cert,
             // FIXED: Remove duplicate tls_version (already in analysis.tls_version above)
         });
 

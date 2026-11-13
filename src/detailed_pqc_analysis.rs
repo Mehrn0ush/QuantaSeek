@@ -677,10 +677,9 @@ mod tests {
             analyzer.analyze_kem_negotiation(&client_offered, server_selected, &key_exchange);
 
         assert_eq!(negotiation.client_offered.len(), 2);
-        assert_eq!(
-            negotiation.server_selected.as_ref().unwrap().name,
-            "ML-KEM-768"
-        );
+        // Ensure server_selected is present and has the expected name without panicking
+        assert!(negotiation.server_selected.is_some());
+        assert_eq!(negotiation.server_selected.unwrap().name, "ML-KEM-768");
         assert!(negotiation.preference_matched);
         assert_eq!(negotiation.total_candidates, 2);
     }

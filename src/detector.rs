@@ -221,6 +221,10 @@ impl PqcDetector {
             kem_negotiation: None,
             extension_usage: None,
             hybrid_details: None,
+            pqc_signature_observation: String::new(),
+            pqc_key_exchange_observed: false,
+            pqc_signature_observed: false,
+            pqc_signature_inferred_from_cert: false,
         };
 
         // Analyze key exchange
@@ -273,9 +277,10 @@ impl PqcDetector {
         // Estimate security level
         analysis.security_level = self.estimate_security_level(&analysis).to_string();
 
-        // Set a clear status for signature algorithms
+        // Set a clear status for signature algorithms and machine-readable observation flag
         // FIXED: Set pqc_signature_used to None when status is Unknown (TLS 1.3 encrypted)
         if !analysis.pqc_signature_algorithms.is_empty() {
+            analysis.pqc_signature_observed = true;
             if handshake_result.tls_version == "1.3" && handshake_result.certificate_visible {
                 analysis.pqc_signature_status = "Offered by client".to_string();
                 analysis.signature_negotiation_status = SignatureNegotiationStatus::NotOffered;
@@ -298,18 +303,33 @@ impl PqcDetector {
                 "Unknown (TLS 1.3 encryption prevents direct observation)".to_string();
             analysis.signature_negotiation_status = SignatureNegotiationStatus::Unknown;
             analysis.pqc_signature_used = None; // Unknown - cannot determine
+            analysis.pqc_signature_observation = "unknown".to_string();
         } else if handshake_result.certificate_visible {
             analysis.pqc_signature_status = "None found".to_string();
             analysis.signature_negotiation_status = SignatureNegotiationStatus::NotOffered;
             analysis.pqc_signature_used = Some(false);
+            analysis.pqc_signature_observation = "not_applicable".to_string();
         } else {
             analysis.pqc_signature_status = "Not applicable".to_string();
             analysis.signature_negotiation_status = SignatureNegotiationStatus::NotOffered;
             analysis.pqc_signature_used = Some(false);
+            analysis.pqc_signature_observation = "not_applicable".to_string();
         }
 
         // Apply detailed PQC analysis
         self.apply_detailed_pqc_analysis(&mut analysis, handshake_result);
+
+        // Finalize key/signature observation flags
+        if !analysis.pqc_key_exchange.is_empty() {
+            analysis.pqc_key_exchange_observed = true;
+        }
+        if analysis
+            .pqc_signature_algorithms
+            .iter()
+            .any(|s| s.starts_with("pqc_sig_oid:"))
+        {
+            analysis.pqc_signature_inferred_from_cert = true;
+        }
 
         analysis
     }
@@ -531,6 +551,7 @@ impl PqcDetector {
             analysis.pqc_signature_used = Some(false);
             analysis.signature_negotiation_status = SignatureNegotiationStatus::NotApplicable;
             analysis.pqc_signature_status = "Not applicable (TLS 1.2)".to_string();
+            analysis.pqc_signature_observation = "not_applicable".to_string();
 
             // Still analyze basic TLS information
             self.analyze_cipher_suite(result, &mut analysis);
@@ -633,6 +654,55 @@ impl PqcDetector {
 
         // Apply detailed PQC analysis
         self.apply_detailed_pqc_analysis(&mut analysis, result);
+
+        // Finalize key/signature observation flags and status classification
+        if !analysis.pqc_key_exchange.is_empty() {
+            analysis.pqc_key_exchange_observed = true;
+        }
+        if !analysis.pqc_signature_algorithms.is_empty() {
+            analysis.pqc_signature_observed = true;
+        }
+        if analysis
+            .pqc_signature_algorithms
+            .iter()
+            .any(|s| s.starts_with("pqc_sig_oid:"))
+        {
+            analysis.pqc_signature_inferred_from_cert = true;
+        }
+
+        // Derive a compact, machine-readable observation status for PQC signatures.
+        //
+        // - "observed": at least one PQC signature algorithm was observed or inferred
+        // - "not_applicable":
+        //     * TLS 1.2 or earlier (no PQC signatures in protocol)
+        //     * TLS 1.3+ where certificate is visible but only classical signatures are present
+        // - "not_implemented": QUIC handshakes where PQC signature visibility is not yet supported
+        // - "unknown": TLS 1.3+ where handshake encryption prevents us from deciding and we have
+        //              no positive evidence of PQC signatures
+        analysis.pqc_signature_observation = if matches!(
+            analysis.signature_negotiation_status,
+            SignatureNegotiationStatus::NotApplicable
+        ) || result.tls_version == "1.2"
+        {
+            "not_applicable".to_string()
+        } else if analysis.pqc_signature_observed {
+            "observed".to_string()
+        } else if result.connection_type.as_deref() == Some("quic")
+            && matches!(
+                analysis.signature_negotiation_status,
+                SignatureNegotiationStatus::Unknown
+            )
+        {
+            // QUIC path: we don't yet expose handshake signatures, so this is a scanner
+            // limitation rather than a property of the endpoint.
+            "not_implemented".to_string()
+        } else if result.certificate_visible && analysis.pqc_signature_algorithms.is_empty() {
+            // TLS 1.3+ with a visible (classical-only) certificate and no PQC signature
+            // algorithms detected: PQC signatures are simply not in use here.
+            "not_applicable".to_string()
+        } else {
+            "unknown".to_string()
+        };
 
         analysis
     }

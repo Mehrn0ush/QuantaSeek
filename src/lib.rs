@@ -57,8 +57,8 @@ pub use output::OutputFormatter;
 pub use security_scoring::SecurityScorer;
 pub use signature_detector::SignatureDetector;
 pub use types::{
-    CertificateInfo, ClientProfile, ExtensionMap, FallbackInfo, HandshakeProfile, HandshakeResult,
-    OutputFormat, PqcAnalysis, PqcExtensions, ScanResult, SecurityScore,
+    CertificateInfo, ClientProfile, ErrorCode, ExtensionMap, FallbackInfo, HandshakeProfile,
+    HandshakeResult, OutputFormat, PqcAnalysis, PqcExtensions, ScanError, ScanResult, SecurityScore,
     SignatureNegotiationStatus, TlsFeatures,
 };
 

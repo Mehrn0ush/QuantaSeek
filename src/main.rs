@@ -6,8 +6,8 @@ use quanta_seek::{
     output::output_results,
     security_scoring::SecurityScorer,
     types::{
-        ClientProfile, FallbackInfo, HandshakeResult, OutputFormat, PerformanceWarning, ScanResult,
-        SecurityScore, SecurityWarning, WarningLevel,
+        ClientProfile, ErrorCode, FallbackInfo, HandshakeResult, OutputFormat, PerformanceWarning,
+        ScanError, ScanResult, SecurityScore, SecurityWarning, WarningLevel,
     },
     HandshakeEngine, HandshakeProfile,
 };
@@ -167,21 +167,27 @@ async fn scan_target(
     // IMPROVED: Enhanced connection strategy with better port detection
     let is_experimental = detect_quic_server(target).await;
 
-    // Try QUIC first for experimental servers
+    // Try QUIC first for experimental servers (with timeout to avoid hanging)
+    const QUIC_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
     if is_experimental {
         if !quiet {
             println!("  Attempting QUIC handshake for experimental server...");
         }
         let quic_scan_start = Instant::now();
         let handshake = HandshakeEngine::new_optimized(profile.to_handshake_profile());
-        match handshake.perform_quic_handshake(target, 443).await {
-            Ok(quic_result) => {
+        let quic_outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(QUIC_HANDSHAKE_TIMEOUT_SECS),
+            handshake.perform_quic_handshake(target, 443),
+        )
+        .await;
+        match quic_outcome {
+            Ok(Ok(quic_handshake_result)) => {
                 if !quiet {
                     println!("  QUIC handshake successful!");
                 }
                 // Convert HandshakeResult -> ScanResult
                 let mut scan_result = ScanResult::new(target.to_string());
-                scan_result.update_from_handshake(quic_result);
+                scan_result.update_from_handshake(quic_handshake_result);
                 // raw_server_hello is already copied in update_from_handshake
 
                 let mut certificate_replaced = false;
@@ -282,11 +288,24 @@ async fn scan_target(
                 // FIXED: Set total_scan_duration_ms for QUIC
                 let total_scan_duration = quic_scan_start.elapsed();
                 scan_result.total_scan_duration_ms = Some(total_scan_duration.as_millis() as u64);
+                // Expose fallback/QUIC status on success (QUIC path succeeded)
+                scan_result.fallback_strategy_used = Some("quic_then_tcp_tls".to_string());
+                scan_result.fallback_success = Some(true);
+                scan_result.quic_only_server_detected = Some(false);
                 return Ok(scan_result);
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 if !quiet {
                     println!("  QUIC handshake failed: {}, falling back to TLS", e);
+                }
+                // Continue with TLS fallback
+            }
+            Err(_) => {
+                if !quiet {
+                    println!(
+                        "  QUIC handshake timed out ({}s), falling back to TLS",
+                        QUIC_HANDSHAKE_TIMEOUT_SECS
+                    );
                 }
                 // Continue with TLS fallback
             }
@@ -296,7 +315,26 @@ async fn scan_target(
     let ports_to_try = if is_experimental {
         try_alternative_ports(target).await
     } else {
-        vec![443, 8443, 4433, 9443, 4443]
+        // Deterministic but configurable primary ports.
+        // QUANTASEEK_PRIMARY_PORTS can override the default comma-separated list.
+        let default_ports = vec![443u16, 8443, 4433, 9443, 4443];
+        if let Ok(raw) = std::env::var("QUANTASEEK_PRIMARY_PORTS") {
+            let mut ports = Vec::new();
+            for item in raw.split(',') {
+                if let Ok(p) = item.trim().parse::<u16>() {
+                    if !ports.contains(&p) {
+                        ports.push(p);
+                    }
+                }
+            }
+            if !ports.is_empty() {
+                ports
+            } else {
+                default_ports
+            }
+        } else {
+            default_ports
+        }
     };
 
     for port in ports_to_try.iter() {
@@ -313,7 +351,21 @@ async fn scan_target(
 
                 match perform_scan_with_stream(stream, target, &actual_profile, tls12_enabled).await
                 {
-                    Ok(scan_result) => result = scan_result,
+                    Ok(scan_result) => {
+                        result = scan_result;
+                        // Expose fallback/QUIC status on TCP success
+                        result.fallback_strategy_used = Some(if is_experimental {
+                            "quic_then_tcp_tls".to_string()
+                        } else {
+                            "tcp_tls_only".to_string()
+                        });
+                        result.fallback_success = Some(true);
+                        result.quic_only_server_detected = if is_experimental {
+                            Some(false) // we tried QUIC then TCP succeeded
+                        } else {
+                            None // QUIC was not probed
+                        };
+                    }
                     Err(e) => {
                         result.security_warnings.push(SecurityWarning {
                             message: format!("Scan failed: {}", e),
@@ -348,7 +400,12 @@ async fn scan_target(
                         println!("  Connected to {}:{} (PQC port)", target, port);
                     }
                     match perform_scan_with_stream(stream, target, profile, tls12_enabled).await {
-                        Ok(scan_result) => result = scan_result,
+                        Ok(scan_result) => {
+                            result = scan_result;
+                            result.fallback_strategy_used = Some("quic_then_tcp_tls".to_string());
+                            result.fallback_success = Some(true);
+                            result.quic_only_server_detected = Some(false);
+                        }
                         Err(e) => {
                             result.security_warnings.push(SecurityWarning {
                                 level: WarningLevel::Critical,
@@ -377,40 +434,49 @@ async fn scan_target(
             .collect::<Vec<_>>()
             .join(", ");
 
-        // IMPROVED: More detailed error analysis
-        let error_msg = if let Some(ref error) = last_error {
+        // IMPROVED: Map last_error to stable ErrorCode and message
+        let (error_code, error_msg) = if let Some(ref error) = last_error {
             let error_str = error.to_string();
             if error_str.contains("refused") {
-                "Connection refused - server may be offline or not listening on TLS ports"
+                (ErrorCode::ConnectionRefused, error_str)
             } else if error_str.contains("timeout") {
-                "Connection timeout - server may be slow or overloaded"
+                (ErrorCode::ConnectionTimeout, error_str)
             } else if error_str.contains("dns") || error_str.contains("not found") {
-                "DNS resolution failed - check hostname spelling"
+                (ErrorCode::DnsFailed, error_str)
             } else if error_str.contains("reset") {
-                "Connection reset - server may not support the requested TLS configuration"
+                (ErrorCode::ConnectionReset, error_str)
             } else if error_str.contains("permission") {
-                "Permission denied - may need elevated privileges"
+                (ErrorCode::PermissionDenied, error_str)
             } else {
-                // For unknown errors, use a generic message
-                "Connection failed - unknown error"
+                (ErrorCode::ConnectionFailed, error_str)
             }
         } else {
-            "Unknown connection error"
+            (ErrorCode::Unknown, "Unknown connection error".to_string())
         };
 
-        // IMPROVED: Better error reporting with detailed QUIC detection
         let is_quic_likely = detect_quic_server(target).await;
         let quic_support_detected = test_quic_support(target).await;
 
-        let (error_details, recommendation) = if quic_support_detected {
-            ("QUIC support detected but TLS connection failed", 
-             "This server supports QUIC but not TLS. Try using curl with --http3 or a QUIC-enabled client. For PQC testing, consider using a different server or protocol.")
+        // Override error code when QUIC detection indicates QUIC-only or likely QUIC-only
+        let (final_code, recommendation) = if quic_support_detected {
+            (
+                ErrorCode::QuicOnlyOrTlsUnavailable,
+                ErrorCode::QuicOnlyOrTlsUnavailable
+                    .recommendation()
+                    .map(String::from),
+            )
         } else if is_quic_likely {
-            ("Server appears to be QUIC-only or experimental", 
-             "This server appears to be QUIC-only or experimental. Try using curl with --http3 or check if the server supports TLS connections. For PQC testing, consider using a different server or protocol.")
+            (
+                ErrorCode::QuicLikelyConnectionFailed,
+                ErrorCode::QuicLikelyConnectionFailed
+                    .recommendation()
+                    .map(String::from),
+            )
         } else {
-            ("Standard TLS connection failed", 
-             "Try with different profiles (standard, cloudflare-pqc) or check if server supports PQC/TLS 1.3. For experimental servers, try ports 853, 4433.")
+            (
+                error_code,
+                error_code.recommendation().map(String::from),
+            )
         };
 
         result.security_warnings.push(SecurityWarning {
@@ -418,10 +484,29 @@ async fn scan_target(
             category: "Connection".to_string(),
             message: format!(
                 "Scan failed: {} - {} (tried ports: {})",
-                error_details, error_msg, ports_tried
+                final_code.default_message(),
+                error_msg,
+                ports_tried
             ),
-            recommendation: Some(recommendation.to_string()),
+            recommendation: recommendation.clone(),
         });
+        // Stable error schema for machine-readable consumers
+        result.error = Some(ScanError::from_code_with_message(
+            final_code,
+            error_msg,
+            Some(format!(
+                "ports_tried={}, is_quic_likely={}, quic_support_detected={}",
+                ports_tried, is_quic_likely, quic_support_detected
+            )),
+        ));
+        // Expose fallback and QUIC-only status in a stable JSON shape
+        result.fallback_strategy_used = Some(if quic_support_detected || is_quic_likely {
+            "quic_then_tcp_tls".to_string()
+        } else {
+            "ports_and_profile_chain".to_string()
+        });
+        result.fallback_success = Some(false);
+        result.quic_only_server_detected = Some(quic_support_detected);
     }
 
     Ok(result)
@@ -430,9 +515,15 @@ async fn scan_target(
 async fn try_connect(hostname: &str, port: u16) -> Result<TcpStream, Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", hostname, port);
 
-    // Try with shorter timeout for faster scanning
+    // Try with deterministic but configurable timeout for faster scanning.
+    // QUANTASEEK_CONNECT_TIMEOUT_SECS can override the default of 5 seconds.
+    let timeout_secs: u64 = std::env::var("QUANTASEEK_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(5);
+
     match tokio::time::timeout(
-        std::time::Duration::from_secs(5), // Reduced from 10 to 5 seconds
+        std::time::Duration::from_secs(timeout_secs),
         TcpStream::connect(&addr),
     )
     .await
@@ -485,16 +576,20 @@ async fn detect_quic_server(hostname: &str) -> bool {
     false
 }
 
-/// IMPROVED: Direct QUIC detection by attempting UDP connections
+/// IMPROVED: Direct QUIC detection by attempting UDP connections (with short timeout)
 async fn test_quic_support(hostname: &str) -> bool {
     let quic_ports = [443, 853, 4433, 8443];
+    const UDP_PROBE_TIMEOUT_MS: u64 = 500;
 
     for port in &quic_ports {
-        // Try to establish a UDP connection (basic QUIC detection)
         if let Ok(socket) = tokio::net::UdpSocket::bind("0.0.0.0:0").await {
             let addr = format!("{}:{}", hostname, port);
-            if let Ok(_) = socket.connect(&addr).await {
-                // If we can connect via UDP, the server might support QUIC
+            let connect_result = tokio::time::timeout(
+                std::time::Duration::from_millis(UDP_PROBE_TIMEOUT_MS),
+                socket.connect(&addr),
+            )
+            .await;
+            if matches!(connect_result, Ok(Ok(_))) {
                 return true;
             }
         }
@@ -747,6 +842,10 @@ async fn perform_scan_with_stream(
         http_redirect: None,
         connection_type: handshake_result.connection_type.clone(),
         cipher_suite_reason: handshake_result.cipher_suite_reason.clone(),
+        fallback_strategy_used: None,
+        fallback_success: None,
+        quic_only_server_detected: None,
+        error: None,
     };
 
     scan_result.security_score = scorer.calculate_security_score(&scan_result);
@@ -928,6 +1027,11 @@ async fn scan_multiple_targets(
                     category: "Connection".to_string(),
                     recommendation: None,
                 }];
+                failed_result.error = Some(ScanError::from_code_with_message(
+                    ErrorCode::ScanFailed,
+                    e.to_string(),
+                    None,
+                ));
                 results.push(failed_result);
             }
         }

@@ -405,8 +405,10 @@ impl SignatureDetector {
                         detected_signatures.len()
                     );
                 } else {
+                    // No observable signature data – treat as genuinely unknown rather than
+                    // a \"not implemented\" scanner feature gap.
                     analysis.pqc_signature_status =
-                        "Not Implemented for TLS 1.3 (requires deeper handshake parsing)"
+                        "Unknown (no observable PQC signature data; TLS 1.3 handshake encrypted)"
                             .to_string();
                 }
             }
