@@ -168,6 +168,9 @@ pub struct ScanOptions {
     pub sni: Option<String>,
     /// Follow HTTP redirects after the handshake and report them separately.
     pub follow_redirects: bool,
+    /// Connect to this address instead of resolving the target host
+    /// (the host is still used for SNI). Like curl's --connect-to.
+    pub connect_to: Option<std::net::SocketAddr>,
     pub connect_timeout: Duration,
     pub handshake: HandshakeConfig,
 }
@@ -178,6 +181,7 @@ impl Default for ScanOptions {
             ports: DEFAULT_PORTS.to_vec(),
             sni: None,
             follow_redirects: false,
+            connect_to: None,
             connect_timeout: Duration::from_secs(5),
             handshake: HandshakeConfig::default(),
         }
@@ -283,7 +287,13 @@ pub async fn try_connect(
 ) -> Result<TcpStream, Box<dyn std::error::Error>> {
     let timeout = opts.connect_timeout;
 
-    match tokio::time::timeout(timeout, TcpStream::connect((hostname, port))).await {
+    let connect = async {
+        match opts.connect_to {
+            Some(addr) => TcpStream::connect(addr).await,
+            None => TcpStream::connect((hostname, port)).await,
+        }
+    };
+    match tokio::time::timeout(timeout, connect).await {
         Ok(Ok(stream)) => {
             // Set TCP options for better performance
             stream.set_nodelay(true)?;

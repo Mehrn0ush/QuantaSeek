@@ -143,6 +143,8 @@ async fn sni_override_is_sent_and_validated() {
         .await
         .unwrap();
     assert!(!result.handshake_complete);
+    // A handshake that fails after TCP connects must still report an error.
+    assert!(result.error.is_some());
 }
 
 async fn redirect_pair(pki: &TestPki) -> (TestServer, TestServer) {
@@ -209,4 +211,43 @@ async fn followed_redirect_never_replaces_target_certificate() {
         redirect.final_destination_certificate.unwrap().subject,
         "redirect-destination"
     );
+}
+
+#[tokio::test]
+async fn hostname_substrings_do_not_change_behaviour() {
+    // These names used to trigger the fake QUIC path, extra ports, TLS 1.2
+    // auto-enable and scoring leniency. Now they are just names.
+    init();
+    for name in ["s2n-quic.oqstest.net", "pq-demo-test.duckdns.org"] {
+        let pki = TestPki::new("names");
+        let server = spawn(ServerSpec {
+            identity: pki.leaf(name, &[name]),
+            groups: vec![X25519MLKEM768, X25519],
+            http_response: None,
+        })
+        .await;
+        let opts = quanta_seek::scan::ScanOptions {
+            connect_to: Some(server.addr),
+            ..scan_options(&pki)
+        };
+        let result = quanta_seek::scan::scan_target(
+            &opts,
+            &format!("{name}:443"),
+            &HandshakeProfile::Default,
+        )
+        .await
+        .unwrap();
+        assert!(result.handshake_complete, "{name}: {:?}", result.error);
+        assert_eq!(result.connection_type.as_deref(), Some("tls"));
+        assert_eq!(
+            result.fallback_strategy_used.as_deref(),
+            Some("tcp_tls_only")
+        );
+        assert_eq!(
+            server.accepted_at_least(1).await[0].sni.as_deref(),
+            Some(name)
+        );
+        // Reachability probe plus one handshake: no retries, no extra ports.
+        assert_eq!(server.connections(), 2);
+    }
 }
