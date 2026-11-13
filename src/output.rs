@@ -139,32 +139,7 @@ impl OutputFormatter {
         }
     }
 
-    /// Known experimental/QUIC-only domains for filtering in reports (suggestion 8.4).
-    /// Summary scripts should exclude or tag these so site-level metrics are not mixed with production.
-    fn is_experimental_quic_only_domain(target: &str) -> bool {
-        let host = target.split(':').next().unwrap_or(target).to_lowercase();
-        const EXPERIMENTAL_QUIC_DOMAINS: &[&str] = &[
-            "s2n-quic.oqstest.net",
-            "test.pqkd.aws",
-            "oqs.duckdns.org",
-            "oqstest.net", // subdomains
-            "pqkd.aws",
-            "quantumtls.com",
-        ];
-        EXPERIMENTAL_QUIC_DOMAINS
-            .iter()
-            .any(|d| host == *d || host.ends_with(&format!(".{}", *d)))
-    }
-
     fn format_json(&self, result: &ScanResult) -> String {
-        // IMPROVED: Add protocol detection information
-        let target_lower = result.target.to_lowercase();
-        let is_experimental = target_lower.contains("test")
-            || target_lower.contains("demo")
-            || target_lower.contains("experimental")
-            || target_lower.contains("quic");
-        let experimental_quic_only_domain = Self::is_experimental_quic_only_domain(&result.target);
-
         let mut json_output = json!({
             "target": result.target,
             "tls_version": result.tls_version,
@@ -185,8 +160,6 @@ impl OutputFormatter {
             "server_fingerprint": result.server_fingerprint,
             "extension_map": result.extension_map,
             "security_score": result.security_score,
-            "is_experimental_server": is_experimental,
-            "experimental_quic_only_domain": experimental_quic_only_domain,
             "protocol_support": {
                 "tls": true,
                 // FIXED: QUIC and HTTP/3 are always "unknown" since we only scan TLS/TCP, not UDP/QUIC

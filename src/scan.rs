@@ -14,7 +14,7 @@ use crate::{
     HandshakeEngine, HandshakeProfile,
 };
 use anyhow::Result;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::net::TcpStream;
 
 /// Ports probed for reachability, in order.
@@ -106,355 +106,94 @@ pub async fn scan_target(
     opts: &ScanOptions,
     target: &str,
     profile: &ClientProfile,
-    tls12_enabled: bool,
 ) -> Result<ScanResult> {
     let mut result = ScanResult::new(target.to_string());
-    // FIXED: Set profile immediately so failed scans don't show "Unknown"
     result.set_profile(profile.consistent_display_name());
-
-    // Try multiple DNS resolution strategies
-    let mut connection_success = false;
-    let mut last_error = None;
-    let mut tried_ports = Vec::new();
-
-    // IMPROVED: Enhanced connection strategy with better port detection
-    let is_experimental = detect_quic_server(target).await;
-
-    // Try QUIC first for experimental servers (with timeout to avoid hanging)
-    const QUIC_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
-    if is_experimental {
-        tracing::info!("  Attempting QUIC handshake for experimental server...");
-
-        let quic_scan_start = Instant::now();
-        let handshake = HandshakeEngine::with_config(
-            profile.to_handshake_profile(),
-            HandshakeConfig {
-                timeout_ms: 2000,
-                ..opts.handshake.clone()
-            },
-        );
-        let quic_outcome = tokio::time::timeout(
-            std::time::Duration::from_secs(QUIC_HANDSHAKE_TIMEOUT_SECS),
-            handshake.perform_quic_handshake(target, 443),
-        )
-        .await;
-        match quic_outcome {
-            Ok(Ok(quic_handshake_result)) => {
-                tracing::info!("  QUIC path finished (data comes from a TCP/TLS fallback; no QUIC handshake is performed)");
-
-                // Convert HandshakeResult -> ScanResult
-                let mut scan_result = ScanResult::new(target.to_string());
-                scan_result.update_from_handshake(quic_handshake_result);
-                // raw_server_hello is already copied in update_from_handshake
-
-                // Detect HTTP redirects after handshake
-                if scan_result.handshake_complete {
-                    match detect_http_redirects(target, 10).await {
-                        Ok(redirect_info) => {
-                            if redirect_info.detected {
-                                tracing::debug!(
-                                    "HTTP redirect detected for {} (QUIC): status={:?}, chain={:?}",
-                                    target,
-                                    redirect_info.status_code,
-                                    redirect_info.redirect_chain
-                                );
-
-                                scan_result.http_redirect = Some(redirect_info.clone());
-                                // Use final destination certificate if different
-                                if let Some(ref final_cert) =
-                                    redirect_info.final_destination_certificate
-                                {
-                                    let should_replace = scan_result
-                                        .certificate
-                                        .as_ref()
-                                        .map(|initial_cert| {
-                                            initial_cert.subject != final_cert.subject
-                                                || initial_cert.issuer != final_cert.issuer
-                                        })
-                                        .unwrap_or(true);
-                                    if should_replace {
-                                        scan_result.certificate = Some(final_cert.clone());
-                                        // Re-analyze with new certificate
-                                        let detector = PqcDetector::new();
-                                        let handshake_result = HandshakeResult {
-                                            target: target.to_string(),
-                                            tls_version: scan_result.tls_version.clone(),
-                                            cipher_suite: scan_result.cipher_suite.clone(),
-                                            key_exchange: scan_result.key_exchange.clone(),
-                                            pqc_extensions: scan_result.pqc_extensions.clone(),
-                                            certificate_info: scan_result.certificate.clone(),
-                                            raw_server_hello: scan_result.raw_server_hello.clone(),
-                                            raw_certificate: Vec::new(),
-                                            alert_info: None,
-                                            certificate_visible: scan_result.certificate_visible,
-                                            handshake_complete: scan_result.handshake_complete,
-                                            pqc_signature_algorithms: Vec::new(),
-                                            pqc_signature_used: None,
-                                            tls_features: scan_result.tls_features.clone(),
-                                            handshake_duration_ms: scan_result
-                                                .handshake_duration_ms,
-                                            client_profile_used: HandshakeProfile::Standard,
-                                            extension_map: scan_result.extension_map.clone(),
-                                            connection_type: scan_result.connection_type.clone(),
-                                            cipher_suite_reason: scan_result
-                                                .cipher_suite_reason
-                                                .clone(),
-                                        };
-                                        let updated_analysis =
-                                            detector.analyze_handshake(&handshake_result);
-                                        scan_result.analysis = updated_analysis;
-                                        // Recalculate security score with new certificate
-                                        let scorer = SecurityScorer::new();
-                                        scan_result.security_score =
-                                            scorer.calculate_security_score(&scan_result);
-                                        scan_result.security_warnings = scorer
-                                            .generate_security_warnings(
-                                                &scan_result.security_score,
-                                            );
-                                    }
-                                }
-                            } else {
-                                tracing::debug!("No HTTP redirect detected for {} (QUIC)", target);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::debug!(
-                                "HTTP redirect detection failed for {} (QUIC): {}",
-                                target,
-                                e
-                            );
-                        }
-                    }
-                } else {
-                    tracing::debug!(
-                        "Skipping HTTP redirect detection (QUIC): handshake not complete for {}",
-                        target
-                    );
-                }
-
-                // Calculate security score (recalculate if certificate was replaced)
-                let scorer = SecurityScorer::new();
-                scan_result.security_score = scorer.calculate_security_score(&scan_result);
-                scan_result.security_warnings =
-                    scorer.generate_security_warnings(&scan_result.security_score);
-                // FIXED: Set total_scan_duration_ms for QUIC
-                let total_scan_duration = quic_scan_start.elapsed();
-                scan_result.total_scan_duration_ms = Some(total_scan_duration.as_millis() as u64);
-                // Expose fallback/QUIC status on success (QUIC path succeeded)
-                scan_result.fallback_strategy_used = Some("quic_then_tcp_tls".to_string());
-                scan_result.fallback_success = Some(true);
-                scan_result.quic_only_server_detected = Some(false);
-                return Ok(scan_result);
-            }
-            Ok(Err(e)) => {
-                tracing::info!("  QUIC handshake failed: {}, falling back to TLS", e);
-
-                // Continue with TLS fallback
-            }
-            Err(_) => {
-                tracing::info!(
-                    "  QUIC handshake timed out ({}s), falling back to TLS",
-                    QUIC_HANDSHAKE_TIMEOUT_SECS
-                );
-
-                // Continue with TLS fallback
-            }
-        }
-    }
 
     let parsed = Target::parse(target).map_err(|e| anyhow::anyhow!(e))?;
     let host = parsed.host.as_str();
     let ports_to_try = match parsed.port {
         Some(port) => vec![port],
-        None if is_experimental => try_alternative_ports(target).await,
         None => opts.ports.clone(),
     };
 
-    for port in ports_to_try.iter() {
+    let mut tried_ports = Vec::new();
+    let mut last_error = None;
+    for port in &ports_to_try {
         tried_ports.push(*port);
         match try_connect(opts, host, *port).await {
             Ok(stream) => {
-                connection_success = true;
                 tracing::info!("  Connected to {}:{}", host, port);
-
-                // FIXED: Use the actual provided profile instead of overriding
-                let actual_profile = *profile;
-
-                match perform_scan_with_stream(
-                    opts,
-                    stream,
-                    target,
-                    host,
-                    *port,
-                    &actual_profile,
-                    tls12_enabled,
-                )
-                .await
-                {
+                match perform_scan_with_stream(opts, stream, target, host, *port, profile).await {
                     Ok(scan_result) => {
                         result = scan_result;
-                        // Expose fallback/QUIC status on TCP success
-                        result.fallback_strategy_used = Some(if is_experimental {
-                            "quic_then_tcp_tls".to_string()
-                        } else {
-                            "tcp_tls_only".to_string()
-                        });
+                        result.fallback_strategy_used = Some("tcp_tls_only".to_string());
                         result.fallback_success = Some(true);
-                        result.quic_only_server_detected = if is_experimental {
-                            Some(false) // we tried QUIC then TCP succeeded
-                        } else {
-                            None // QUIC was not probed
-                        };
                     }
                     Err(e) => {
                         result.security_warnings.push(SecurityWarning {
                             message: format!("Scan failed: {}", e),
                             level: WarningLevel::Critical,
                             category: "Handshake".to_string(),
-                            recommendation: Some(
-                                "Check if the server supports the requested TLS configuration."
-                                    .to_string(),
-                            ),
+                            recommendation: None,
                         });
-                        last_error = Some(e);
+                        result.error = Some(ScanError::from_code_with_message(
+                            ErrorCode::HandshakeFailed,
+                            e.to_string(),
+                            Some(format!("port={}", port)),
+                        ));
                     }
                 }
-                break;
+                return Ok(result);
             }
-            Err(e) => {
-                last_error = Some(e);
-                continue;
-            }
+            Err(e) => last_error = Some(e),
         }
     }
 
-    // Strategy 2: Try additional ports for experimental servers
-    if !connection_success && is_experimental && parsed.port.is_none() {
-        let additional_ports = [853, 8530, 8531, 8532, 8533, 8534, 8535, 10443];
-        for port in additional_ports.iter() {
-            tried_ports.push(*port);
-            match try_connect(opts, host, *port).await {
-                Ok(stream) => {
-                    connection_success = true;
-                    tracing::info!("  Connected to {}:{} (PQC port)", target, port);
-
-                    match perform_scan_with_stream(
-                        opts,
-                        stream,
-                        target,
-                        host,
-                        *port,
-                        profile,
-                        tls12_enabled,
-                    )
-                    .await
-                    {
-                        Ok(scan_result) => {
-                            result = scan_result;
-                            result.fallback_strategy_used = Some("quic_then_tcp_tls".to_string());
-                            result.fallback_success = Some(true);
-                            result.quic_only_server_detected = Some(false);
-                        }
-                        Err(e) => {
-                            result.security_warnings.push(SecurityWarning {
-                                level: WarningLevel::Critical,
-                                category: "Handshake".to_string(),
-                                message: format!("Handshake failed on PQC port {}: {}", port, e),
-                                recommendation: Some(
-                                    "Server may not support PQC on this port".to_string(),
-                                ),
-                            });
-                        }
-                    }
-                    break;
-                }
-                Err(e) => {
-                    last_error = Some(format!("PQC Port {}: {}", port, e).into());
-                }
-            }
-        }
-    }
-
-    // If all connection attempts failed
-    if !connection_success {
-        let ports_tried = tried_ports
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        // IMPROVED: Map last_error to stable ErrorCode and message
-        let (error_code, error_msg) = if let Some(ref error) = last_error {
-            let error_str = error.to_string();
-            if error_str.contains("refused") {
-                (ErrorCode::ConnectionRefused, error_str)
-            } else if error_str.contains("timeout") {
-                (ErrorCode::ConnectionTimeout, error_str)
-            } else if error_str.contains("dns") || error_str.contains("not found") {
-                (ErrorCode::DnsFailed, error_str)
-            } else if error_str.contains("reset") {
-                (ErrorCode::ConnectionReset, error_str)
-            } else if error_str.contains("permission") {
-                (ErrorCode::PermissionDenied, error_str)
+    // No port accepted a TCP connection.
+    let ports_tried = tried_ports
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (code, message) = match last_error {
+        Some(error) => {
+            let text = error.to_string();
+            let code = if text.contains("refused") {
+                ErrorCode::ConnectionRefused
+            } else if text.contains("timeout") {
+                ErrorCode::ConnectionTimeout
+            } else if text.contains("dns") || text.contains("not found") {
+                ErrorCode::DnsFailed
+            } else if text.contains("reset") {
+                ErrorCode::ConnectionReset
+            } else if text.contains("permission") {
+                ErrorCode::PermissionDenied
             } else {
-                (ErrorCode::ConnectionFailed, error_str)
-            }
-        } else {
-            (ErrorCode::Unknown, "Unknown connection error".to_string())
-        };
-
-        let is_quic_likely = detect_quic_server(target).await;
-        let quic_support_detected = test_quic_support(target).await;
-
-        // Override error code when QUIC detection indicates QUIC-only or likely QUIC-only
-        let (final_code, recommendation) = if quic_support_detected {
-            (
-                ErrorCode::QuicOnlyOrTlsUnavailable,
-                ErrorCode::QuicOnlyOrTlsUnavailable
-                    .recommendation()
-                    .map(String::from),
-            )
-        } else if is_quic_likely {
-            (
-                ErrorCode::QuicLikelyConnectionFailed,
-                ErrorCode::QuicLikelyConnectionFailed
-                    .recommendation()
-                    .map(String::from),
-            )
-        } else {
-            (error_code, error_code.recommendation().map(String::from))
-        };
-
-        result.security_warnings.push(SecurityWarning {
-            level: WarningLevel::Critical,
-            category: "Connection".to_string(),
-            message: format!(
-                "Scan failed: {} - {} (tried ports: {})",
-                final_code.default_message(),
-                error_msg,
-                ports_tried
-            ),
-            recommendation: recommendation.clone(),
-        });
-        // Stable error schema for machine-readable consumers
-        result.error = Some(ScanError::from_code_with_message(
-            final_code,
-            error_msg,
-            Some(format!(
-                "ports_tried={}, is_quic_likely={}, quic_support_detected={}",
-                ports_tried, is_quic_likely, quic_support_detected
-            )),
-        ));
-        // Expose fallback and QUIC-only status in a stable JSON shape
-        result.fallback_strategy_used = Some(if quic_support_detected || is_quic_likely {
-            "quic_then_tcp_tls".to_string()
-        } else {
-            "ports_and_profile_chain".to_string()
-        });
-        result.fallback_success = Some(false);
-        result.quic_only_server_detected = Some(quic_support_detected);
-    }
-
+                ErrorCode::ConnectionFailed
+            };
+            (code, text)
+        }
+        None => (ErrorCode::Unknown, "Unknown connection error".to_string()),
+    };
+    result.security_warnings.push(SecurityWarning {
+        level: WarningLevel::Critical,
+        category: "Connection".to_string(),
+        message: format!(
+            "Scan failed: {} - {} (tried ports: {})",
+            code.default_message(),
+            message,
+            ports_tried
+        ),
+        recommendation: None,
+    });
+    result.error = Some(ScanError::from_code_with_message(
+        code,
+        message,
+        Some(format!("ports_tried={}", ports_tried)),
+    ));
+    result.fallback_strategy_used = Some("ports_and_profile_chain".to_string());
+    result.fallback_success = Some(false);
     Ok(result)
 }
 
@@ -490,76 +229,6 @@ pub async fn try_connect(
     }
 }
 
-/// IMPROVED: Detect if server might be QUIC-only
-pub async fn detect_quic_server(hostname: &str) -> bool {
-    // Check for common QUIC indicators in hostname
-    let quic_indicators = ["quic", "http3", "h3", "udp", "s2n-quic"];
-    let hostname_lower = hostname.to_lowercase();
-
-    for indicator in &quic_indicators {
-        if hostname_lower.contains(indicator) {
-            return true;
-        }
-    }
-
-    // Check for experimental PQC domains that might be QUIC-only
-    let experimental_quic_domains = ["oqstest.net", "quantumtls.com", "pqkd.aws", "duckdns.org"];
-
-    for domain in &experimental_quic_domains {
-        if hostname_lower.contains(domain) {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// IMPROVED: Direct QUIC detection by attempting UDP connections (with short timeout)
-async fn test_quic_support(hostname: &str) -> bool {
-    let quic_ports = [443, 853, 4433, 8443];
-    const UDP_PROBE_TIMEOUT_MS: u64 = 500;
-
-    for port in &quic_ports {
-        if let Ok(socket) = tokio::net::UdpSocket::bind("0.0.0.0:0").await {
-            let addr = format!("{}:{}", hostname, port);
-            let connect_result = tokio::time::timeout(
-                std::time::Duration::from_millis(UDP_PROBE_TIMEOUT_MS),
-                socket.connect(&addr),
-            )
-            .await;
-            if matches!(connect_result, Ok(Ok(_))) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-/// IMPROVED: Try alternative ports for experimental servers
-async fn try_alternative_ports(_hostname: &str) -> Vec<u16> {
-    let mut ports = Vec::new();
-
-    // Standard TLS ports
-    ports.extend_from_slice(&[443, 8443, 4433, 9443, 4443]);
-
-    // PQC-specific ports
-    ports.extend_from_slice(&[853, 8530, 8531, 8532, 8533, 8534, 8535]);
-
-    // Experimental ports
-    ports.extend_from_slice(&[4443, 8443, 9443, 10443]);
-
-    // Remove duplicates while preserving order
-    let mut unique_ports = Vec::new();
-    for port in ports {
-        if !unique_ports.contains(&port) {
-            unique_ports.push(port);
-        }
-    }
-
-    unique_ports
-}
-
 /// IMPROVED: Profile-based fallback strategy implementation
 /// Each profile has a specific fallback chain:
 /// - Fallback: MaxPQC → Hybrid → Classical (TLS 1.2)
@@ -573,7 +242,6 @@ pub async fn perform_scan_with_stream(
     host: &str,
     port: u16,
     profile: &ClientProfile,
-    tls12_enabled: bool,
 ) -> Result<ScanResult, Box<dyn std::error::Error>> {
     let scan_start = std::time::Instant::now();
     let server_name = opts.sni.as_deref().unwrap_or(host);
@@ -611,9 +279,7 @@ pub async fn perform_scan_with_stream(
         // Standard profile = TLS 1.2 only, but we still need raw_server_hello for analysis
         let handshake_attempt = if *fallback_profile == HandshakeProfile::Standard {
             // Standard profile = TLS 1.2 only
-            let mut handshake =
-                HandshakeEngine::with_config(*fallback_profile, opts.handshake.clone());
-            handshake = handshake.with_tls12_fallback();
+            let handshake = HandshakeEngine::with_config(*fallback_profile, opts.handshake.clone());
 
             // FIXED: Use perform_handshake instead of perform_tcp_tls_handshake to capture raw_server_hello
             // This ensures raw_server_hello is populated even for Classic profile
@@ -630,19 +296,7 @@ pub async fn perform_scan_with_stream(
             }
         } else {
             // For PQC profiles, use normal TLS 1.3 handshake
-            let mut handshake =
-                HandshakeEngine::with_config(*fallback_profile, opts.handshake.clone());
-
-            // Enable TLS 1.2 fallback for certificate extraction if requested
-            let should_enable_tls12 = tls12_enabled
-                || detect_quic_server(target).await
-                || target.contains("demo")
-                || target.contains("test")
-                || target.contains("experimental");
-
-            if should_enable_tls12 {
-                handshake = handshake.with_tls12_fallback();
-            }
+            let handshake = HandshakeEngine::with_config(*fallback_profile, opts.handshake.clone());
 
             // Try to perform handshake with this profile
             // Always create a new connection for each attempt to avoid ownership issues
@@ -722,39 +376,13 @@ pub async fn perform_scan_with_stream(
         Vec::new()
     };
 
-    // TLS 1.2 fallback information (separate from profile fallback)
-    let tls12_fallback_used = handshake_result.tls_version == "1.2";
-    // Check if TLS 1.2 was attempted for certificate extraction (even if TLS 1.3 was used)
-    // This is tracked separately from protocol-level TLS 1.2 usage
-    let tls12_fallback_attempted_for_cert = tls12_enabled
-        && handshake_result.tls_version == "1.3"
-        && handshake_result.certificate_visible;
-    let tls12_fallback_info = if tls12_enabled {
-        Some(crate::types::Tls12FallbackInfo {
-            enabled: true,
-            used: tls12_fallback_used,
-            attempted_for_certificate: tls12_fallback_attempted_for_cert,
-        })
-    } else {
-        None
-    };
-
-    // Calculate fallback penalty (time difference between attempts)
-    let fallback_penalty_ms =
-        if profile_fallback_used && handshake_result.handshake_duration_ms.is_some() {
-            // Estimate: each fallback attempt adds ~100ms overhead
-            Some(profile_fallback_attempts_count as u64 * 100)
-        } else {
-            None
-        };
-
     let fallback = FallbackInfo {
         enabled: profile_fallback_enabled,
         used: profile_fallback_used,
         attempts_count: profile_fallback_attempts_count,
         attempted_profiles: attempted_profiles_list,
-        fallback_penalty_ms,
-        tls12_fallback: tls12_fallback_info,
+        fallback_penalty_ms: None,
+        tls12_fallback: None,
     };
 
     let scorer = SecurityScorer::new();
@@ -881,7 +509,7 @@ pub async fn scan_multiple_targets(
     for target in targets {
         tracing::info!("Scanning: {}", target);
 
-        match scan_target(opts, target, &profile, true).await {
+        match scan_target(opts, target, &profile).await {
             // Enable TLS 1.2 fallback for batch scans
             Ok(mut result) => {
                 // Add performance analysis and recommendations for batch results

@@ -330,32 +330,7 @@ impl SecurityScorer {
             {
                 // FIXED: More appropriate penalty for hostname mismatch
                 // Hostname mismatch is a security issue - should significantly reduce validation score
-                let target_lower = result.target.to_lowercase();
-                let experimental_indicators = [
-                    "test",
-                    "demo",
-                    "dev",
-                    "experimental",
-                    "pqc",
-                    "quantum",
-                    "duckdns",
-                    "oqstest",
-                    "cryptoserver",
-                    "pqkd",
-                ];
-
-                let is_experimental = experimental_indicators
-                    .iter()
-                    .any(|indicator| target_lower.contains(indicator));
-
-                if is_experimental {
-                    // Minimal penalty for experimental/test servers (they often use shared certs)
-                    score -= 10;
-                } else {
-                    // Significant penalty for production servers - hostname mismatch is a security issue
-                    // Reduces score to 50-60 range which is appropriate for mismatch
-                    score -= 40; // Changed from 25 to 40 for more accurate scoring
-                }
+                score -= 40;
             }
 
             // Check for algorithm consistency

@@ -673,7 +673,7 @@ impl PqcDetector {
     /// Fixed: Correctly handles ML-KEM-1024, ML-KEM-768, Kyber variants, and standardizes format
     fn generate_endpoint_fingerprint(
         &self,
-        hostname: &str,
+        _hostname: &str,
         key_exchange: &[String],
         cipher_suite: &str,
         tls_version: &str,
@@ -684,13 +684,6 @@ impl PqcDetector {
         }
 
         let mut fingerprint_parts = Vec::new();
-
-        // Check for known PQC endpoints
-        let hostname_lower = hostname.to_lowercase();
-
-        if hostname_lower.contains("cloudflare") && hostname_lower.contains("pq") {
-            fingerprint_parts.push("cloudflare-pqc".to_string());
-        }
 
         // Add key exchange info (deduplicated) - FIXED: Correctly identify ML-KEM variants
         let mut seen_algorithms = std::collections::HashSet::new();
@@ -721,7 +714,7 @@ impl PqcDetector {
             }
         }
 
-        // Standardized format: [cloudflare-pqc-]classical-pqc-cipher
+        // Standardized format: classical-pqc-cipher
         // If only classical: classical-cipher
         // If only PQC: pqc-cipher
         // If hybrid: classical-pqc-cipher
@@ -736,8 +729,6 @@ impl PqcDetector {
                 classical_parts.push(part.clone());
             } else if part.starts_with("mlkem") || part.starts_with("kyber") {
                 pqc_parts.push(part.clone());
-            } else if part == "cloudflare-pqc" {
-                ordered_parts.push(part.clone());
             }
         }
 

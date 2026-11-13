@@ -27,10 +27,6 @@ struct Cli {
     #[arg(short, long, value_enum, default_value_t = FormatArg::Json)]
     format: FormatArg,
 
-    /// Enable TLS 1.2 fallback for certificate analysis
-    #[arg(long)]
-    tls12: bool,
-
     /// Server name to send in SNI and validate the certificate against
     /// (default: the target host)
     #[arg(long, value_name = "NAME")]
@@ -106,19 +102,15 @@ async fn main() -> Result<()> {
         FormatArg::Text => OutputFormat::Text,
     };
     let targets = cli.targets;
-    let tls12_enabled = cli.tls12;
 
     tracing::info!("QuantaSeek {}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Targets: {}", targets.join(", "));
     tracing::info!("Profile: {}", profile.display_name());
-    if tls12_enabled && profile != ClientProfile::Classic {
-        tracing::info!("TLS 1.2 fallback enabled for certificate analysis");
-    }
 
     let scan_start = Instant::now();
 
     if targets.len() == 1 {
-        let result = scan_target(&opts, &targets[0], &profile, tls12_enabled).await?;
+        let result = scan_target(&opts, &targets[0], &profile).await?;
         output_results(&result, format);
     } else {
         let results = scan_multiple_targets(&opts, &targets, profile).await?;

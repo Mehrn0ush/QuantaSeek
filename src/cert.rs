@@ -235,35 +235,6 @@ impl CertificateParser {
         Self::hostname_matches_subject(&hostname_lower, subject)
     }
 
-    /// Query Certificate Transparency logs for certificate information
-    ///
-    /// NOTE: This is a placeholder implementation. In a real implementation, you would:
-    /// 1. Query multiple CT log servers (e.g., Google, Cloudflare, DigiCert)
-    /// 2. Parse the returned certificate data
-    /// 3. Extract signature algorithms and other details
-    ///
-    /// FIXED: Do not return mock data - return None to indicate unavailability
-    /// Mock data is unreliable and misleading. Certificate information should only
-    /// come from real TLS handshakes or real CT log API queries.
-    pub async fn query_ct_logs(_hostname: &str) -> Result<Option<CertificateInfo>> {
-        // FIXED: Do not return mock certificate data
-        // CT log queries require real API integration with CT log servers
-        // Returning None indicates that certificate information is not available
-        // without real CT log API implementation
-        Ok(None)
-    }
-
-    /// PQC signature algorithms of a certificate obtained from CT logs,
-    /// identified by OID only.
-    pub fn extract_pqc_signatures_from_ct(cert_info: &CertificateInfo) -> Vec<String> {
-        cert_info
-            .signature_algorithm_oid
-            .as_deref()
-            .filter(|oid| crate::constants::is_pqc_oid(oid))
-            .map(|oid| vec![format!("pqc_sig_oid:{}", oid)])
-            .unwrap_or_default()
-    }
-
     /// Check if hostname matches any DNS name in SAN
     pub fn hostname_matches_san(hostname: &str, san: &str) -> bool {
         // Split SAN into individual DNS names

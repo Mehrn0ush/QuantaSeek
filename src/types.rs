@@ -15,12 +15,6 @@ pub struct HandshakeConfig {
     pub retry_base_delay_ms: u64,
     /// Enable performance optimizations
     pub enable_optimizations: bool,
-    /// Enable TLS 1.2 fallback for certificate analysis
-    pub tls12_fallback_enabled: bool,
-    /// Always attempt TLS 1.2 fallback (not based on hostname)
-    pub always_attempt_tls12_fallback: bool,
-    /// Always query CT logs (not based on hostname)
-    pub always_query_ct_logs: bool,
 }
 
 impl Default for HandshakeConfig {
@@ -32,9 +26,6 @@ impl Default for HandshakeConfig {
             retry_backoff_multiplier: 2,
             retry_base_delay_ms: 100,
             enable_optimizations: true,
-            tls12_fallback_enabled: false,
-            always_attempt_tls12_fallback: false,
-            always_query_ct_logs: false,
         }
     }
 }
@@ -378,10 +369,6 @@ pub enum ErrorCode {
     ConnectionReset,
     /// Permission denied (e.g. binding port)
     PermissionDenied,
-    /// QUIC reachable but TLS connection failed (QUIC-only server)
-    QuicOnlyOrTlsUnavailable,
-    /// Hostname suggests QUIC/experimental but connection failed
-    QuicLikelyConnectionFailed,
     /// Generic connection failure (all ports failed)
     ConnectionFailed,
     /// Handshake failed (TLS/QUIC negotiation failed)
@@ -405,12 +392,6 @@ impl ErrorCode {
                 "Connection reset - server may not support the requested TLS configuration"
             }
             ErrorCode::PermissionDenied => "Permission denied - may need elevated privileges",
-            ErrorCode::QuicOnlyOrTlsUnavailable => {
-                "QUIC support detected but TLS connection failed"
-            }
-            ErrorCode::QuicLikelyConnectionFailed => {
-                "Server appears to be QUIC-only or experimental"
-            }
             ErrorCode::ConnectionFailed => "Standard TLS connection failed",
             ErrorCode::HandshakeFailed => {
                 "Handshake failed - server may not support the requested TLS configuration"
@@ -423,9 +404,6 @@ impl ErrorCode {
     /// Optional recommendation for remediation
     pub fn recommendation(&self) -> Option<&'static str> {
         match self {
-            ErrorCode::QuicOnlyOrTlsUnavailable | ErrorCode::QuicLikelyConnectionFailed => {
-                Some("Try using curl with --http3 or a QUIC-enabled client. For PQC testing, consider using a different server or protocol.")
-            }
             ErrorCode::ConnectionFailed | ErrorCode::HandshakeFailed => {
                 Some("Try with different profiles (standard, cloudflare-pqc) or check if server supports PQC/TLS 1.3. For experimental servers, try ports 853, 4433.")
             }
@@ -442,8 +420,6 @@ impl std::fmt::Display for ErrorCode {
             ErrorCode::DnsFailed => write!(f, "dns_failed"),
             ErrorCode::ConnectionReset => write!(f, "connection_reset"),
             ErrorCode::PermissionDenied => write!(f, "permission_denied"),
-            ErrorCode::QuicOnlyOrTlsUnavailable => write!(f, "quic_only_or_tls_unavailable"),
-            ErrorCode::QuicLikelyConnectionFailed => write!(f, "quic_likely_connection_failed"),
             ErrorCode::ConnectionFailed => write!(f, "connection_failed"),
             ErrorCode::HandshakeFailed => write!(f, "handshake_failed"),
             ErrorCode::ScanFailed => write!(f, "scan_failed"),

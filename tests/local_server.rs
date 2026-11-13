@@ -61,7 +61,6 @@ async fn scans_the_port_named_in_the_target() {
         &scan_options(&pki),
         &target,
         &quanta_seek::types::ClientProfile::Fallback,
-        false,
     )
     .await
     .unwrap();
@@ -133,7 +132,7 @@ async fn sni_override_is_sent_and_validated() {
         sni: Some("qs.test".into()),
         ..scan_options(&pki)
     };
-    let result = quanta_seek::scan::scan_target(&opts, &target, &profile, false)
+    let result = quanta_seek::scan::scan_target(&opts, &target, &profile)
         .await
         .unwrap();
     assert!(result.handshake_complete, "error: {:?}", result.error);
@@ -144,7 +143,7 @@ async fn sni_override_is_sent_and_validated() {
 
     // Without the override the name is the IP literal, which the certificate
     // does not cover, so validation fails and no handshake completes.
-    let result = quanta_seek::scan::scan_target(&scan_options(&pki), &target, &profile, false)
+    let result = quanta_seek::scan::scan_target(&scan_options(&pki), &target, &profile)
         .await
         .unwrap();
     assert!(!result.handshake_complete);
