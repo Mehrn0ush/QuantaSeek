@@ -154,7 +154,9 @@ pub struct TlsInfo {
     /// The server answered the first ClientHello with a HelloRetryRequest.
     pub hello_retry_request: bool,
     /// The server's handshake signature scheme (TLS 1.3 CertificateVerify,
-    /// TLS 1.2 ServerKeyExchange).
+    /// TLS 1.2 ServerKeyExchange). In TLS 1.2 an ECDSA codepoint names only
+    /// the hash (RFC 5246 §7.4.1.4.1), e.g. ecdsa_secp384r1_sha384 can be a
+    /// P-256 key signing with SHA-384; the key is in `certificate_chain[0]`.
     pub server_signature_scheme: Option<SignatureSchemeReport>,
     pub handshake_ms: u64,
 }

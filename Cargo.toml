@@ -12,6 +12,10 @@ publish = false
 name = "quantaseek"
 path = "src/main.rs"
 
+[features]
+# Integration tests against the Docker testbed (testbed/compose.yml).
+testbed = []
+
 [dependencies]
 anyhow = "1.0"
 aws-lc-rs = { version = "1.19", default-features = false, features = ["aws-lc-sys"] }
@@ -33,3 +37,4 @@ x509-parser = "0.17.0"
 [dev-dependencies]
 jsonschema = { version = "0.61.2", default-features = false }
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs"] }
+rustls-pki-types = { version = "1", features = ["std"] }

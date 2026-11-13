@@ -516,7 +516,7 @@
               "type": "null"
             }
           ],
-          "description": "The server's handshake signature scheme (TLS 1.3 CertificateVerify,\nTLS 1.2 ServerKeyExchange)."
+          "description": "The server's handshake signature scheme (TLS 1.3 CertificateVerify,\nTLS 1.2 ServerKeyExchange). In TLS 1.2 an ECDSA codepoint names only\nthe hash (RFC 5246 §7.4.1.4.1), e.g. ecdsa_secp384r1_sha384 can be a\nP-256 key signing with SHA-384; the key is in `certificate_chain[0]`."
         },
         "version": {
           "description": "\"1.3\" or \"1.2\".",
