@@ -687,3 +687,155 @@ async fn probe_detects_client_hello_size_intolerance() {
     // split across TCP segments is judged by its (small) length: passes.
     assert_eq!(t.split_segments, "ok");
 }
+
+// ---------------------------------------------------------------- findings
+
+fn finding_ids(r: &ScanReport) -> Vec<String> {
+    r.assessment
+        .as_ref()
+        .unwrap()
+        .findings
+        .iter()
+        .map(|f| f.id.clone())
+        .collect()
+}
+
+fn not_evaluated_ids(r: &ScanReport) -> Vec<String> {
+    r.assessment
+        .as_ref()
+        .unwrap()
+        .not_evaluated
+        .iter()
+        .map(|n| n.id.clone())
+        .collect()
+}
+
+fn has(r: &ScanReport, id: &str) -> bool {
+    finding_ids(r).iter().any(|f| f == id)
+}
+
+async fn probed(server: &Server) -> Option<ScanReport> {
+    let opts = quanta_seek::probe::ProbeOptions {
+        spacing: Duration::from_millis(20),
+        ..Default::default()
+    };
+    scan_with(server, HandshakeProfile::Default, Some(opts)).await
+}
+
+/// Positive and negative testbed fixture per rule. Expected values follow
+/// from each server's configuration and confirm.sh, not from scanner output.
+#[tokio::test]
+async fn rules_on_testbed_fixtures() {
+    let Some(pq) = scan(&X25519MLKEM768, HandshakeProfile::Default).await else {
+        return;
+    };
+    let Some(classical) = scan(&CLASSICAL, HandshakeProfile::Default).await else {
+        return;
+    };
+    let Some(tls12) = scan(&TLS12_CLASSICAL, HandshakeProfile::Classical).await else {
+        return;
+    };
+    let Some(mlkem1024) = scan(&MLKEM1024, HandshakeProfile::Mlkem).await else {
+        return;
+    };
+    let Some(mldsa) = scan(&CERT_MLDSA65, HandshakeProfile::Default).await else {
+        return;
+    };
+    let Some(expired) = scan(&CERT_EXPIRED, HandshakeProfile::Default).await else {
+        return;
+    };
+    let Some(slhdsa) = scan(&CERT_SLHDSA_CA, HandshakeProfile::Default).await else {
+        return;
+    };
+    let Some(hybrid_probe) = probed(&HYBRID_AND_CLASSICAL).await else {
+        return;
+    };
+    let Some(classical_probe) = probed(&CLASSICAL).await else {
+        return;
+    };
+    let Some(middlebox_probe) = probed(&MIDDLEBOX_1024).await else {
+        return;
+    };
+
+    // QS-TLS-001: TLS 1.2 negotiated.
+    assert!(has(&tls12, "QS-TLS-001"));
+    assert!(!has(&pq, "QS-TLS-001"));
+    // QS-KEX-001: classical key exchange negotiated.
+    assert!(has(&classical, "QS-KEX-001"));
+    assert!(!has(&pq, "QS-KEX-001"));
+    // QS-KEX-002: OpenSSL accepts the classical share (confirm.sh). The
+    // negative case (rustls retries for the PQ group) is in tests/probe.rs.
+    assert!(has(&hybrid_probe, "QS-KEX-002"));
+    assert!(not_evaluated_ids(&pq).contains(&"QS-KEX-002".to_string()));
+    // QS-KEX-004: no PQ group accepted by the prober.
+    assert!(has(&classical_probe, "QS-KEX-004"));
+    assert!(!has(&hybrid_probe, "QS-KEX-004"));
+    // QS-KEX-005: padded ClientHello dropped by the middlebox.
+    assert!(has(&middlebox_probe, "QS-KEX-005"));
+    assert!(!has(&classical_probe, "QS-KEX-005"));
+    // QS-KEX-010: not ML-KEM-1024.
+    assert!(has(&pq, "QS-KEX-010"));
+    assert!(!has(&mlkem1024, "QS-KEX-010"));
+    // QS-CERT-001 / QS-CERT-002: classical chain and handshake signature.
+    assert!(has(&pq, "QS-CERT-001") && has(&pq, "QS-CERT-002"));
+    assert!(!has(&mldsa, "QS-CERT-001") && !has(&mldsa, "QS-CERT-002"));
+    // QS-CERT-003: no HashML-DSA fixture can be built (testbed/README.md);
+    // negative only here, positive in src/findings/rules.rs.
+    assert!(!has(&mldsa, "QS-CERT-003"));
+    // QS-CERT-004: invalid chain; not evaluated where webpki cannot verify.
+    assert!(has(&expired, "QS-CERT-004"));
+    assert!(!has(&pq, "QS-CERT-004"));
+    assert!(!has(&slhdsa, "QS-CERT-004"));
+    assert!(not_evaluated_ids(&slhdsa).contains(&"QS-CERT-004".to_string()));
+
+    // Every finding is derived from observed fields.
+    for r in [
+        &pq,
+        &classical,
+        &tls12,
+        &expired,
+        &hybrid_probe,
+        &middlebox_probe,
+    ] {
+        for f in &r.assessment.as_ref().unwrap().findings {
+            assert_eq!(f.provenance, "derived");
+            assert!(!f.evidence.is_empty(), "{}", f.id);
+            assert!(!f.references.is_empty(), "{}", f.id);
+        }
+    }
+}
+
+#[tokio::test]
+async fn nist_policy_applies_its_clauses() {
+    let policy = quanta_seek::findings::policy("nist-ir-8547").unwrap();
+    let Some(anchors) = trust_anchors(&CLASSICAL) else {
+        return;
+    };
+    let opts = ScanOptions {
+        connect_timeout: Duration::from_secs(3),
+        handshake: HandshakeConfig {
+            trust_anchors: Some(anchors),
+            timeout_ms: 5000,
+        },
+        policy: Some(policy),
+        ..ScanOptions::default()
+    };
+    let r = scan_target(
+        &opts,
+        &format!("localhost:{}", CLASSICAL.port),
+        &HandshakeProfile::Default,
+    )
+    .await;
+    let a = r.assessment.as_ref().unwrap();
+    assert_eq!(a.policy.as_ref().unwrap().id, "nist-ir-8547");
+    let kex = a
+        .findings
+        .iter()
+        .find(|f| f.id == "QS-KEX-001")
+        .expect("QS-KEX-001");
+    let clause = kex.policy.as_ref().unwrap();
+    assert_eq!(clause.clause, "4.1.2, Table 4");
+    assert!(clause.deadline.as_deref().unwrap().contains("2035"));
+    // QS-KEX-010 is not part of the NIST pack (NIST recommends ML-KEM-768).
+    assert!(a.findings.iter().all(|f| f.id != "QS-KEX-010"));
+}

@@ -195,3 +195,38 @@ async fn probing_aborts_after_repeated_connect_failures() {
         .count();
     assert!(skipped > 0);
 }
+
+#[tokio::test]
+async fn qs_kex_002_passes_when_server_retries_for_pq() {
+    // Negative fixture for QS-KEX-002: rustls retries for the PQ group
+    // (see hello_retry_and_downgrade_probes for the source reference).
+    init();
+    let pki = TestPki::new("kex002");
+    let server = spawn(ServerSpec {
+        identity: pki.leaf("localhost", &["localhost"]),
+        groups: vec![X25519MLKEM768, X25519],
+        http_response: None,
+    })
+    .await;
+    let opts = ScanOptions {
+        connect_timeout: Duration::from_secs(2),
+        handshake: HandshakeConfig {
+            trust_anchors: Some(pki.roots()),
+            timeout_ms: 2000,
+        },
+        probe: Some(ProbeOptions {
+            spacing: Duration::ZERO,
+            ..ProbeOptions::default()
+        }),
+        ..ScanOptions::default()
+    };
+    let r = scan_target(
+        &opts,
+        &format!("localhost:{}", server.port()),
+        &HandshakeProfile::Default,
+    )
+    .await;
+    let a = r.assessment.unwrap();
+    assert!(a.findings.iter().all(|f| f.id != "QS-KEX-002"));
+    assert!(a.not_evaluated.iter().all(|n| n.id != "QS-KEX-002"));
+}

@@ -63,6 +63,11 @@ struct Cli {
     #[arg(long, default_value = "high", value_name = "SEVERITY")]
     fail_on: String,
 
+    /// PEM file of CA certificates to trust instead of the webpki-roots
+    /// bundle (for internal PKIs)
+    #[arg(long, value_name = "PEM")]
+    ca_file: Option<std::path::PathBuf>,
+
     /// TCP connect timeout in seconds
     #[arg(long, default_value_t = 5, value_name = "SECS")]
     connect_timeout: u64,
@@ -78,6 +83,25 @@ struct Cli {
     /// Increase log detail on stderr (-v debug, -vv trace)
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+}
+
+/// Trust anchors from a PEM file; fails if it contains no usable certificate.
+fn load_ca_file(path: &std::path::Path) -> Result<rustls::RootCertStore> {
+    use rustls_pki_types::pem::PemObject;
+    use rustls_pki_types::CertificateDer;
+    let mut store = rustls::RootCertStore::empty();
+    for cert in CertificateDer::pem_file_iter(path)
+        .map_err(|e| anyhow::anyhow!("cannot read {}: {}", path.display(), e))?
+    {
+        let cert = cert.map_err(|e| anyhow::anyhow!("{}: {}", path.display(), e))?;
+        store
+            .add(cert)
+            .map_err(|e| anyhow::anyhow!("{}: unusable CA certificate: {}", path.display(), e))?;
+    }
+    if store.is_empty() {
+        anyhow::bail!("{} contains no CA certificates", path.display());
+    }
+    Ok(store)
 }
 
 fn parse_policy(id: &str) -> Result<&'static quanta_seek::findings::PolicyPack, String> {
@@ -132,9 +156,13 @@ async fn main() -> Result<std::process::ExitCode> {
     // the ML-KEM hybrid groups.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
+    let trust_anchors = match &cli.ca_file {
+        Some(path) => Some(std::sync::Arc::new(load_ca_file(path)?)),
+        None => None,
+    };
     let handshake = HandshakeConfig {
         timeout_ms: cli.handshake_timeout,
-        ..HandshakeConfig::default()
+        trust_anchors,
     };
     let opts = ScanOptions {
         sni: cli.sni.clone(),
