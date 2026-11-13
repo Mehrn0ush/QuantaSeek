@@ -39,6 +39,10 @@ These lists come from the pinned build itself, not from memory:
 
 ## Servers and their ground truth
 
+`confirm.sh` also builds a per-group acceptance matrix: each server is offered
+each of the ten groups the prober can generate, one at a time. The prober's
+`accepted_groups` must equal that set for every server (67 checks in total).
+
 The second column of the table is the configuration, from compose.yml and the
 entrypoint. The third column is the independent confirmation: `confirm.sh`
 running `openssl s_client` from the same image, inside the container.
@@ -47,18 +51,20 @@ running `openssl s_client` from the same image, inside the container.
 |---|---|---|---|
 | x25519mlkem768 (44301) | s_server `-groups X25519MLKEM768 -tls1_3`, ECDSA P-256 chain | negotiates X25519MLKEM768; a client offering only x25519 gets alert 40 | sees it (`default`) |
 | secp256r1mlkem768 (44302) | `-groups SecP256r1MLKEM768` | negotiates SecP256r1MLKEM768; an X25519MLKEM768-first offer gets two ServerHellos (HRR) | sees it (`hybrid`, with HRR); `default` is rejected |
-| secp384r1mlkem1024 (44303) | `-groups SecP384r1MLKEM1024` | negotiates SecP384r1MLKEM1024; an offer of all seven rustls groups gets alert 40 | **rejected; waiting on M3** (rustls cannot offer the group) |
+| secp384r1mlkem1024 (44303) | `-groups SecP384r1MLKEM1024` | negotiates SecP384r1MLKEM1024; an offer of all seven rustls groups gets alert 40 | full handshake rejected (rustls cannot offer the group); `--probe` reports it accepted |
 | mlkem1024 (44304) | `-groups MLKEM1024` | negotiates MLKEM1024; MLKEM768:x25519 gets alert 40 | sees it (`mlkem`) |
-| mlkem512 (44305) | `-groups MLKEM512` | negotiates MLKEM512; an offer of all seven rustls groups gets alert 40 | **rejected; waiting on M3** |
+| mlkem512 (44305) | `-groups MLKEM512` | negotiates MLKEM512; an offer of all seven rustls groups gets alert 40 | full handshake rejected; `--probe` reports it accepted |
 | classical (44306) | `-groups x25519:secp256r1`, TLS 1.2 and 1.3 | Peer Temp Key X25519 (also with the `default` offer); PQ-only offers get alert 40 | sees it |
 | hrr-secp384r1 (44307) | `-groups secp384r1 -tls1_3` | two ServerHellos when the first share is not secp384r1; Peer Temp Key secp384r1 | sees it, reports `hello_retry_request: true` |
+| hybrid-and-classical (44309) | `-groups X25519MLKEM768:x25519 -tls1_3` | accepted set {x25519, X25519MLKEM768}; with both shares OpenSSL follows the client's order; PQ listed without a share plus an x25519 share → x25519, one ServerHello (no HRR) | sees it; `--probe` downgrade `accepted_classical_share` |
 | tls12-classical (44308) | `-groups x25519:secp256r1 -tls1_2` | TLSv1.2, Peer Temp Key X25519; with rustls's sigalg order the signature is ecdsa_secp384r1_sha384 (SHA-384 digest); a TLS 1.3 client gets a protocol_version alert | sees it (`classical`) |
 | cert-mldsa65 (44311) | ML-DSA-65 root → ML-DSA-65 leaf | Peer signature type mldsa65; verify OK; `storeutl` shows ML-DSA-65 key and signature | sees it |
 | cert-mldsa65-intermediate (44312) | ECDSA root → ML-DSA-65 intermediate → ECDSA leaf | verify OK; chain position 1 is the ML-DSA-65 intermediate; leaf signed with ML-DSA-65 | sees it (`certificate_chain: mixed`) |
-| cert-slhdsa-ca (44313) | SLH-DSA-SHA2-128s root → ECDSA leaf | OpenSSL verifies the chain; leaf signature SLH-DSA-SHA2-128s | **`certificate_rejected`; waiting on M3** (webpki 0.103 cannot verify SLH-DSA) |
-| cert-expired (44314) | leaf valid 2025-01-01 to 2025-02-01 | verify code 10 (certificate has expired) | `certificate_rejected`; chain reporting waits on M3 |
-| cert-mismatch (44315) | leaf SAN `DNS:other.invalid` only | verify code 62 (hostname mismatch) | `certificate_rejected`; chain reporting waits on M3 |
-| cert-self-signed (44316) | self-signed leaf; the exported CA did not issue it | verify code 18–21 | `certificate_rejected`; chain reporting waits on M3 |
+| cert-slhdsa-ca (44313) | SLH-DSA-SHA2-128s root → ECDSA leaf | OpenSSL verifies the chain; leaf signature SLH-DSA-SHA2-128s `certificate_rejected` (webpki 0.103 cannot verify SLH-DSA); chain reported with family `slh_dsa` |
+| cert-expired (44314) | leaf valid 2025-01-01 to 2025-02-01 | verify code 10 (certificate has expired) `certificate_rejected`; chain reported as sent |
+| cert-mismatch (44315) | leaf SAN `DNS:other.invalid` only | verify code 62 (hostname mismatch) `certificate_rejected`; chain reported as sent |
+| cert-self-signed (44316) | self-signed leaf; the exported CA did not issue it | verify code 18–21 `certificate_rejected`; chain reported as sent |
+| middlebox-1024 (44331) | Go proxy closing any connection whose first record exceeds 1024 bytes, in front of s_server `-groups x25519` | by construction (`go/main.go`); s_client with x25519 completes, with X25519MLKEM768 (larger first record) gets no ServerHello | `--probe`: X25519MLKEM768 `closed`, padded `closed`, split records and split segments `ok` |
 | go-x25519mlkem768 (44321) | Go 1.27 `crypto/tls`, `CurvePreferences = [X25519MLKEM768]`, TLS 1.3 | negotiates X25519MLKEM768; x25519:secp256r1 gets alert 40 | sees it |
 
 ## Not built, and why
@@ -74,8 +80,7 @@ running `openssl s_client` from the same image, inside the container.
   name.
 - **HashML-DSA leaf.** OpenSSL 3.5.9 cannot produce one (no id-hash-ml-dsa
   signature algorithm), and RFC 9881 §8.3 forbids it in certificates.
-- **Server that rejects large or split ClientHellos (middlebox
-  simulation).** No maintained server does this by configuration. It needs a
-  purpose-built proxy, which belongs with the M3 prober that tests tolerance.
+- **QUIC server.** Not added: the direct QUIC Initial prober is not built yet
+  (see ROADMAP M3).
 - **rustls `tlsserver-mio`.** rustls servers already run in-process in
   `tests/support`, so a container would duplicate them.

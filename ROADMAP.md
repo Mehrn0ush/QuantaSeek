@@ -3,7 +3,9 @@
 *Written 2026-11-13, at the end of Phase 0 (audit) and Phase 1 (foundation),
 on branch `phase1-foundation`. Updated the same day after milestone M1
 (Truthful output) on branch `m1-truthful-output` (§1.6, §5 M1), and after
-milestone M2 (Deterministic testbed) on branch `m2-testbed` (§1.7, §5 M2).*
+milestone M2 (Deterministic testbed) on branch `m2-testbed` (§1.7, §5 M2),
+and after the first part of M3 (Detection engine) on branch `m3-detection`
+(§1.8, §5 M3).*
 
 This document has nine parts:
 
@@ -212,6 +214,40 @@ second-tool check must send the same offer as the scanner profile it is
 compared with. The schema docs now note that in TLS 1.2 an ECDSA codepoint
 does not bind the curve.
 
+### 1.8 Milestone M3 changes (branch `m3-detection`)
+
+| Commit | Change |
+|---|---|
+| a46c1f1 | ROADMAP: owner verification of M2 checks 1 and 4; M3 decisions |
+| bff2636 | Certificate chains reported even when validation fails; new `certificate_validation` {valid, invalid + reason, not_reached} |
+| 7eee3e5 | The prober (`--probe`): hand-built TLS 1.3 ClientHellos with real ML-KEM/ECDH key shares; group enumeration, preference, HelloRetryRequest, downgrade, ClientHello tolerance; `probe` and `not_requested` in schema v0 |
+| 3d7a6d7 | Testbed: `hybrid-and-classical` and `middlebox-1024` servers; confirm.sh per-group acceptance matrix (67 checks); prober testbed tests |
+| eb8f4cc | Jittered spacing, abort after 3 consecutive connect failures, split-segment tolerance variant, certificate-family unit test |
+| 3fd045c | `server_reply` fuzz target (10.4M executions in 301 s, no crash) |
+| (this commit) | README, testbed README and ROADMAP for M3 |
+
+**Expectations corrected during M3** (both were my assumptions, not
+scanner bugs):
+- rustls servers pick the client's first listed supported group and send a
+  HelloRetryRequest when no key share matches (rustls 0.23.46
+  `server/hs.rs`, `server/tls13.rs`). My first in-process downgrade test
+  assumed the opposite.
+- OpenSSL 3.5.9 behaves the other way round for the same offer: it accepts
+  the classical share without a HelloRetryRequest (`confirm.sh`). The two
+  implementations differ, and the prober reports each correctly.
+
+**Testbed bug fixed:** the first middlebox proxy did not close the backend
+when the client went away. After an HRR probe, the single-threaded
+`s_server` stayed blocked waiting for a second ClientHello, and later probes
+timed out. The proxy now tears down both directions.
+
+**M3 definition change.** Two of the four ignored `m3_*` tests asserted a
+completed rustls handshake on SecP384r1MLKEM1024 and MLKEM512, groups rustls
+cannot offer. That is impossible by construction. They were restated as
+`*_found_by_probe` (the prober reports the group as accepted). The other two
+(`m3_slhdsa_signed_chain_is_reported`, `m3_invalid_certificates_are_reported`)
+were met as written and folded into their live tests.
+
 ---
 
 ## 2. Standards landscape (as of 2026-11-13)
@@ -407,7 +443,7 @@ Acceptance [ran on macOS arm64, Docker 28.0.4, unless noted]:
 | 3 | `cargo +nightly fuzz run server_hello -- -max_total_time=300` | 10.0M executions in 301 s, no crash; certificate_report 6.5M; target_parse 13.2M after the fix |
 | 4 | `cargo test` without the feature uses no network | **Passed**, run by the project owner on 2026-11-13 in a `--network none` Linux container. The GitHub `unshare` job has not run |
 
-### M3: Detection engine (about 4–6 weeks)
+### M3: Detection engine — TCP part done 2026-11-13 (branch `m3-detection`); QUIC not started
 
 **Definition of done includes**
 `cargo test --features testbed --test testbed -- --ignored` passing against
@@ -445,7 +481,36 @@ Scope:
 - **Rate limiting inside the prober.** Probes per host per second, with
   jittered spacing. Abort on repeated resets.
 
-Acceptance:
+Status: the custom prober, chain reporting on failed validation, analysis
+across the chain, and rate limiting (budget, jittered spacing ≥ 100 ms,
+abort after 3 consecutive connect failures) are done (§1.8). **Not done:
+the direct QUIC Initial prober** and its testbed server. QUIC remains in
+`not_implemented`.
+
+Acceptance results [ran 2026-11-13 against the local testbed, macOS arm64].
+The original commands used a planned `probe` subcommand and field names; the
+shipped form is `--probe` and `.probe.*`.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `quantaseek -q --probe localhost:44303 \| jq -e '.probe.accepted_groups == ["SecP384r1MLKEM1024"]'` | `true` |
+| 2 | `quantaseek -q --probe localhost:44307 \| jq -e '.probe.hello_retry \| length > 0 and all(.result == "hello_retry_request")'` | `true` |
+| 3 | "accepts classical when PQC is offered" server yields finding `QS-KEX-002` | **Moved to M4** (findings). The observation exists: `.probe.downgrade.behaviour == "accepted_classical_share"` on `hybrid-and-classical` (44309) |
+| 4 | composite-chain server: `.certificates[1].signature_algorithm == "id-MLDSA65-ECDSA-P384-SHA512"` | **Blocked**: no maintained implementation produces RFC 10073 composites (testbed/README.md). Recognition by OID is unit-tested |
+| 5 | QUIC testbed server reported with `transport == "quic"` | **Not done** (QUIC Initial prober not built) |
+| 6 | probes ≤ budget (40) and default spacing ≥ 100 ms, asserted by the harness | `jq -e '.probe.probes_sent <= 40 and .probe.spacing_ms >= 100'` → `true`; `default_spacing_is_at_least_100ms_with_jitter` measures accept-time gaps at the server; the CLI rejects `--probe-spacing 50` |
+
+The four original `m3_*` testbed tests are met; two were restated (§1.8).
+
+Remaining M3 work (QUIC):
+- QUIC v1 Initial packets (RFC 9000/9001): Initial secret derivation,
+  AES-128-GCM payload protection, header protection.
+- The same ClientHello as CRYPTO frames, spanning several Initial packets
+  for ML-KEM shares, padded to 1200 bytes.
+- Decrypting the server's Initial to read its ServerHello.
+- A quic-go testbed server, ground truth via a second QUIC client.
+
+Original acceptance (kept for reference):
 - `quantaseek probe localhost:<openssl-p384mlkem1024-only> -q | jq -e '.groups.accepted == ["SecP384r1MLKEM1024"]'`
 - against the HRR-forcing server: `.groups.hrr | length > 0`
 - against the "accepts classical when PQC is offered" server, the result contains finding `QS-KEX-002`
@@ -727,7 +792,7 @@ plan) rather than relicensing the scanner.
 
 ## 9. Appendix
 
-### 9.1 Verification log (Phase 0, Phase 1, M1 and M2)
+### 9.1 Verification log (Phase 0, Phase 1, M1, M2 and M3)
 
 - **Builds and tools.**
   - Builds: `cargo build`, `cargo test`, `cargo clippy --all-targets`,
@@ -765,6 +830,14 @@ plan) rather than relicensing the scanner.
   - Fuzzing: 3 × 300 s.
   - Attempted: default tests in a `--network none` Linux container. Aborted
     by a Docker daemon crash, so no result.
+
+- **M3** (no public-host scans):
+  - Read from source: RFC 10024 §4.1–4.2 (key-share formats and sizes,
+    encapsulation-key check); aws-lc-rs 1.19 `kem`/`agreement` APIs;
+    rustls 0.23.46 server group selection.
+  - Ran: `confirm.sh` (67 checks); `tests/testbed.rs` (19 passed);
+    `tests/probe.rs` (5); the M3 CLI acceptance commands against the
+    testbed; `server_reply` fuzzing (300 s).
 
 ### 9.2 Primary sources consulted (2026-11-13)
 

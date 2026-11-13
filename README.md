@@ -51,6 +51,9 @@ cargo build --release
 | `-f, --format json\|text` | JSON Lines (one object per target) or text. Default `json` |
 | `--sni <name>` | Name sent in SNI and validated against the certificate. Default: the target host |
 | `--follow-redirects` | After the handshake, follow HTTP redirects and report them separately (off by default) |
+| `--probe` | Also probe groups, preference, HelloRetryRequest, downgrade and ClientHello-size tolerance (off by default) |
+| `--probe-budget <N>` | Maximum probes per target (default 40) |
+| `--probe-spacing <MS>` | Minimum milliseconds between probes, at least 100 (default 100, plus up to 50% jitter) |
 | `--connect-timeout <SECS>` | TCP connect timeout (default 5) |
 | `--handshake-timeout <MS>` | TLS read/write timeout (default 5000) |
 | `--print-schema` | Print the output's JSON Schema and exit |
@@ -58,6 +61,25 @@ cargo build --release
 
 Results go to stdout and logs to stderr. A target with no port is scanned on
 443 only.
+
+### Probing (`--probe`)
+
+The default scan is one handshake. `--probe` adds up to `--probe-budget` more
+TCP connections, each sending a hand-built TLS 1.3 ClientHello and reading
+only the server's first reply. The probes cover:
+- every group alone, with its key share
+- pairs of accepted groups, in both orders
+- each accepted group listed with no key share (HelloRetryRequest)
+- PQ and classical groups listed with only a classical share (downgrade)
+- the same offer sent normally, padded to 2048 bytes, split into 512-byte
+  records, and split across TCP segments (tolerance)
+
+Probing stops early after 3 consecutive connection failures. Results are in
+`probe`, with provenance `observed`.
+
+```bash
+./target/release/quantaseek -q --probe example.com | jq '.probe.accepted_groups, .probe.downgrade.behaviour'
+```
 
 ### Profiles
 
@@ -89,12 +111,14 @@ How each part of the output is sourced:
 | Part | Provenance |
 |---|---|
 | `tls` (version, cipher suite, key exchange, HelloRetryRequest, server signature scheme) | **Observed** in the handshake |
-| `certificate_chain` | **Observed**: every certificate the server sent, leaf first. Algorithms are named from cited OID tables |
+| `certificate_chain` | **Observed**: every certificate the server sent, leaf first, including chains that fail validation. Algorithms are named from cited OID tables |
 | `evidence.server_hellos_hex` | **Observed**: the raw ServerHello (and HelloRetryRequest) messages |
 | `http_redirect` | **Observed**, only with `--follow-redirects`. Never replaces the target's certificate |
 | `pqc.*` | **Derived**: each has a `value`, `provenance: "derived"`, and the `basis` (the registry rule applied to an observed value) |
 | `outcome.error.interpretation` | **Inferred**: the likely cause of a failure, labelled `provenance: "inferred"` |
-| `not_implemented` | What this version does not observe at all. An absent value is never a "no" |
+| `probe` | **Observed**, only with `--probe`: the server's first reply to each hand-built ClientHello |
+| `certificate_validation` | **Observed**: whether rustls/webpki accepted the chain (`valid`, `invalid` with `reason`, or `not_reached`) |
+| `not_implemented` / `not_requested` | What this version does not observe at all, and what exists but was not requested. An absent value is never a "no" |
 
 A failed scan carries `outcome.error`, with a stable `code` and a `category`
 (examples: [`tests/golden/`](tests/golden/)):
@@ -116,17 +140,22 @@ each entry cites its source (IANA TLS registries, NIST CSOR, RFC 10024, RFC
 
 ## Limitations
 
-These describe the tool after milestone M1, as of 2026-11-13.
+These describe the tool after milestone M3, as of 2026-11-13.
 
 **What the handshake can test**
-- Only the groups in the table above can be offered. A server that supports
-  only SecP384r1MLKEM1024, MLKEM512, curveSM2MLKEM768 or MLKEM1024X448 looks
-  like it supports no PQC group, which is a false negative.
-- One handshake shows only the group the server picked. QuantaSeek does not
-  enumerate supported groups, server preference order, downgrade behaviour or
-  tolerance of large ClientHellos. That is the per-group prober in ROADMAP M3.
-  A `handshake_rejected` under a restrictive profile is therefore reported with
-  an *inferred* cause, not a confirmed one.
+- The full handshake (rustls) can only offer the groups in the profile
+  table. A server that supports only SecP384r1MLKEM1024 or MLKEM512 fails the
+  handshake. `--probe` still finds such groups, but the certificate and
+  handshake signature are then not observed for them.
+- The prober covers the ten groups it can generate keys for (x25519,
+  secp256r1/384r1/521r1, MLKEM512/768/1024, X25519MLKEM768,
+  SecP256r1MLKEM768, SecP384r1MLKEM1024). x448, FFDHE, curveSM2MLKEM768,
+  MLKEM1024X448, the ML-KEM-512 hybrids and the obsolete Kyber drafts are
+  listed as `not_probed`, with the reason.
+- Probes offer TLS 1.3 only. A TLS 1.2-only server rejects every probe.
+- Without `--probe`, a `handshake_rejected` under a restrictive profile is
+  reported with an *inferred* cause. With `--probe`, the per-group results
+  show whether the server accepts any of the offered groups.
 - QUIC is not implemented. Every result is TCP/TLS.
 - ALPN is not offered. OCSP stapling, session resumption, early data,
   Certificate Transparency and revocation are not observed (all listed in
@@ -135,26 +164,28 @@ These describe the tool after milestone M1, as of 2026-11-13.
 **Certificates**
 - The chain is validated by rustls/webpki against the webpki-roots bundle.
   webpki 0.103 verifies ECDSA, Ed25519, RSA and ML-DSA-44/65/87 signatures,
-  but not SLH-DSA, composite ML-DSA or Ed448. A server whose chain uses those
-  is reported as `certificate_rejected`, and its chain is not reported.
-- Any chain that fails validation (expired, wrong name, unknown issuer) is
-  likewise reported only as `certificate_rejected`, with the rustls reason in
-  `message`. The certificates themselves are not reported.
+  but not SLH-DSA, composite ML-DSA or Ed448. Such chains get
+  `certificate_validation.status: "invalid"`, even when correctly signed. The
+  chain is still reported as sent.
 - `pqc.certificate_chain` counts a certificate as post-quantum when its own
   signature algorithm is ML-DSA, SLH-DSA or composite ML-DSA. Whether the
   leaf's key is post-quantum shows in `pqc.handshake_signature`.
+- Composite ML-DSA and HashML-DSA are recognised by OID only. No testbed
+  fixture exists for them, because no maintained implementation produces
+  RFC 10073 composites.
 
 **Operation**
-- Targets are scanned one after another. There is no concurrency, no rate
-  limiting, and no target-file or CIDR input yet (ROADMAP M5).
+- Targets are scanned one after another. There is no concurrency and no
+  target-file or CIDR input yet (ROADMAP M5). Within one target, probes are
+  spaced and capped (see `--probe`).
 - The exit code is 0 whenever output was produced, even if a target failed.
   Check `outcome.status`.
 
 ## Responsible use
 
 Scan only systems you own or are authorised to test. A default scan opens one
-TCP connection and performs one handshake per target; `--follow-redirects`
-adds HTTPS requests. There is no rate limiting yet, so do not run it against
+TCP connection and performs one handshake per target. `--probe` adds up to 40
+connections, at least 100 ms apart. `--follow-redirects` adds HTTPS requests. There is no rate limiting yet, so do not run it against
 third-party hosts at volume.
 
 ## Development
@@ -177,10 +208,11 @@ regenerate the schema with
 
 ### Testbed
 
-[`testbed/`](testbed/README.md) runs 15 TLS servers in Docker, each with a
+[`testbed/`](testbed/README.md) runs 17 TLS servers in Docker, each with a
 known configuration: OpenSSL 3.5.9 and Go 1.27, with ML-KEM hybrid and pure
 groups, HelloRetryRequest, TLS 1.2, ML-DSA and SLH-DSA chains, and expired,
-mismatched and self-signed certificates. `testbed/confirm.sh` checks every
+mismatched and self-signed certificates, a hybrid+classical server, and a
+ClientHello-size middlebox. `testbed/confirm.sh` checks every
 server with `openssl s_client`, independently of QuantaSeek, and
 `tests/testbed.rs` asserts the same values against the scanner:
 
@@ -188,11 +220,10 @@ server with `openssl s_client`, independently of QuantaSeek, and
 docker compose -f testbed/compose.yml up -d --build --wait
 sh testbed/confirm.sh
 cargo test --features testbed --test testbed
-cargo test --features testbed --test testbed -- --ignored   # fails until M3
 ```
 
-The `m3_*` tests are ignored: they state what the M3 detection engine must
-report for servers the scanner cannot see today.
+The prober's expected results are the per-group acceptance matrix that
+`confirm.sh` builds with `openssl s_client`.
 
 ### Fuzzing
 
@@ -201,8 +232,8 @@ cd fuzz && cargo +nightly fuzz run server_hello -- -max_total_time=300
 ```
 
 The targets are `server_hello` (record splitter, ServerHello and
-HelloRetryRequest extraction), `certificate_report` (X.509 wrapper) and
-`target_parse`.
+HelloRetryRequest extraction), `server_reply` (the prober's reply parser),
+`certificate_report` (X.509 wrapper) and `target_parse`.
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs fmt, clippy,
 tests on Linux and macOS, an MSRV (1.88) check, audit and deny. It also has
