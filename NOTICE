@@ -1,0 +1,9 @@
+QuantaSeek
+Copyright 2025-2026 Mehrnoush Vaseghi
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+rules/rules.toml and policies/*.toml quote short passages from published
+standards (NIST publications and IETF RFCs) to cite the clause each rule or
+policy rests on. Those passages remain under their publishers' terms; the
+source and section of every quote are given next to it.
