@@ -279,7 +279,7 @@ async fn scan_target_unassessed(
     target: &str,
     profile: &HandshakeProfile,
 ) -> ScanReport {
-    let started_at = chrono::Utc::now();
+    let started_at = std::time::SystemTime::now();
     let clock = Instant::now();
     let custom_trust_store = opts.handshake.trust_anchors.is_some();
     let ctx = |host: Option<&str>, port, server_name: Option<&str>, address: Option<String>| {

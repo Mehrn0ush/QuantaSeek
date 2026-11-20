@@ -385,7 +385,7 @@ fn report_with(probe: ProbeReport) -> quanta_seek::report::ScanReport {
         profile: HandshakeProfile::Default,
         custom_trust_store: true,
         redirects_requested: false,
-        started_at: chrono::Utc::now(),
+        started_at: std::time::SystemTime::now(),
         duration: Duration::ZERO,
     };
     quanta_seek::report::ScanReport::build(ctx, Some(&obs), None, None, None, Some(probe))

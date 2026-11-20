@@ -446,16 +446,32 @@ fn family_of(oid: &str) -> String {
     .to_string()
 }
 
+/// RFC 3339 in UTC, e.g. "2026-11-20T09:30:00Z", or "2026-11-20T09:30:00.123Z"
+/// with `millis`.
+pub fn rfc3339_utc(t: time::OffsetDateTime, millis: bool) -> String {
+    let t = t.to_offset(time::UtcOffset::UTC);
+    let fraction = if millis {
+        format!(".{:03}", t.millisecond())
+    } else {
+        String::new()
+    };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{fraction}Z",
+        t.year(),
+        u8::from(t.month()),
+        t.day(),
+        t.hour(),
+        t.minute(),
+        t.second()
+    )
+}
+
 /// Parse one DER certificate into its report form.
 pub fn certificate_report(position: usize, der: &[u8]) -> Result<CertificateReport, String> {
     use x509_parser::prelude::*;
     let (_, cert) = X509Certificate::from_der(der).map_err(|e| format!("{e:?}"))?;
     let tbs = &cert.tbs_certificate;
-    let rfc3339 = |t: ASN1Time| {
-        chrono::DateTime::<chrono::Utc>::from_timestamp(t.timestamp(), 0)
-            .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-            .unwrap_or_else(|| t.to_string())
-    };
+    let rfc3339 = |t: ASN1Time| rfc3339_utc(t.to_datetime(), false);
     let (mut san_dns, mut san_ip) = (Vec::new(), Vec::new());
     if let Ok(Some(san)) = tbs.subject_alternative_name() {
         for name in &san.value.general_names {
@@ -593,7 +609,7 @@ pub struct ReportContext {
     pub profile: HandshakeProfile,
     pub custom_trust_store: bool,
     pub redirects_requested: bool,
-    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub started_at: std::time::SystemTime,
     pub duration: std::time::Duration,
 }
 
@@ -705,9 +721,7 @@ impl ScanReport {
                 offered_groups: ctx.profile.offered_group_names(),
                 offered_tls_versions,
             },
-            started_at: ctx
-                .started_at
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            started_at: rfc3339_utc(ctx.started_at.into(), true),
             duration_ms: ctx.duration.as_millis() as u64,
             outcome: Outcome {
                 status: if observation.is_some() {
@@ -868,6 +882,29 @@ impl ScanReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rfc3339_utc_matches_known_instants() {
+        // 1_000_000_000 s after the Unix epoch is 2001-09-09T01:46:40Z.
+        let t = |secs: i64, nanos: i64| {
+            time::OffsetDateTime::from_unix_timestamp_nanos(
+                i128::from(secs) * 1_000_000_000 + i128::from(nanos),
+            )
+            .unwrap()
+        };
+        assert_eq!(rfc3339_utc(t(0, 0), false), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            rfc3339_utc(t(1_000_000_000, 0), false),
+            "2001-09-09T01:46:40Z"
+        );
+        assert_eq!(
+            rfc3339_utc(t(1_000_000_000, 5_999_999), true),
+            "2001-09-09T01:46:40.005Z"
+        );
+        // A non-UTC offset is converted, not relabelled.
+        let plus_two = t(0, 0).to_offset(time::UtcOffset::from_hms(2, 0, 0).unwrap());
+        assert_eq!(rfc3339_utc(plus_two, false), "1970-01-01T00:00:00Z");
+    }
 
     #[test]
     fn cipher_suite_names_follow_iana() {
