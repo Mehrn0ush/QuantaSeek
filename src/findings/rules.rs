@@ -314,7 +314,7 @@ mod tests {
             profile: HandshakeProfile::Default,
             custom_trust_store: false,
             redirects_requested: false,
-            started_at: chrono::Utc::now(),
+            started_at: std::time::SystemTime::now(),
             duration: std::time::Duration::ZERO,
         };
         ScanReport::build(ctx, Some(&obs), None, None, None, None)
