@@ -683,7 +683,8 @@ See §7. Technically:
 - SSO/RBAC and audit logs
 - a REST API with an OpenAPI spec
 
-Acceptance is defined once the licensing decision (D1) is made.
+Acceptance is still to be defined; with D1 decided (Apache-2.0), these
+features would live in a separate private repository.
 
 ---
 
@@ -838,12 +839,14 @@ plan) rather than relicensing the scanner.
 
 ## 8. Decisions needed from the owner
 
-1. **D1 License** for the scanner (§7.1). The recommendation is Apache-2.0. The
-   README currently states that no license has been granted.
+1. **D1 License** for the scanner (§7.1). *Decided (2026-11-14):* Apache-2.0
+   for everything in this repository (LICENSE, NOTICE). Apache-2.0 alone, not
+   the MIT/Apache dual licence, for its patent grant. Paid features would
+   live in a separate private repository.
 2. **D2 Commercial model.** Open core vs. fully open plus services vs.
    proprietary. This decides what lives in this repository.
-3. **D3 Contributions.** DCO (recommended with Apache-2.0) or CLA (needed for
-   dual licensing).
+3. **D3 Contributions.** *Decided (2026-11-14):* DCO sign-off, no CLA (see
+   CONTRIBUTING.md).
 4. **D4 Default branch.** *Decided:* `main`. Still open: whether the remote
    default `master` and the `dev` branch should be retired.
 5. **D5 Output compatibility.** *Decided:* breaking is acceptable; published as

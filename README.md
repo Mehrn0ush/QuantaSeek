@@ -299,5 +299,9 @@ these workflows has run on GitHub yet.
 
 ## License
 
-No license has been chosen yet, so no rights are granted beyond viewing the
-source. See [ROADMAP.md](ROADMAP.md) for the options under consideration.
+Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE).
+
+Contributions are accepted under the same licence, with a Developer
+Certificate of Origin sign-off on every commit; see
+[CONTRIBUTING.md](CONTRIBUTING.md). To report a vulnerability, see
+[SECURITY.md](SECURITY.md).
